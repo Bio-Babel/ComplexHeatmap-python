@@ -394,6 +394,16 @@ class Heatmap(AdditiveUnit):
         post_fun: Optional[Callable] = None,
     ) -> None:
         # --- Matrix ---
+        # R Heatmap-class.R:254,261: row_labels = rownames(matrix),
+        # column_labels = colnames(matrix)
+        # Extract labels from pandas DataFrame before converting to numpy
+        import pandas as _pd
+        if isinstance(matrix, _pd.DataFrame):
+            if row_labels is None and matrix.index is not None:
+                row_labels = [str(x) for x in matrix.index]
+            if column_labels is None and matrix.columns is not None:
+                column_labels = [str(x) for x in matrix.columns]
+
         raw = np.asarray(matrix)
         self._is_numeric_matrix: bool = np.issubdtype(raw.dtype, np.number)
         if self._is_numeric_matrix:
