@@ -693,36 +693,37 @@ def anno_boxplot(
         grid_py.push_viewport(grid_py.Viewport(
             xscale=(0.5, ni + 0.5) if not _is_row(_which) else _data_lim,
             yscale=_data_lim if not _is_row(_which) else (0.5, ni + 0.5),
+            clip=True,
         ))
 
         for pos_i, idx in enumerate(index):
             values = _x_list[idx]
             pos = pos_i + 1
             if _is_row(_which):
-                grid_boxplot(
-                    value=values,
-                    pos=pos,
-                    direction="x",
-                    box_width=_box_width,
-                    outline=_outline,
-                    gp=_gp,
+                bp = grid_boxplot(
+                    value=values, pos=pos, direction="x",
+                    box_width=_box_width, outline=_outline, gp=_gp,
+                    default_units="native",
                 )
             else:
-                grid_boxplot(
-                    value=values,
-                    pos=pos,
-                    direction="y",
-                    box_width=_box_width,
-                    outline=_outline,
-                    gp=_gp,
+                bp = grid_boxplot(
+                    value=values, pos=pos, direction="y",
+                    box_width=_box_width, outline=_outline, gp=_gp,
+                    default_units="native",
                 )
+            grid_py.grid_draw(bp)
 
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
         if _axis and k == 1:
+            ticks = grid_py.grid_pretty(_data_lim)
+            ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
+            tick_labels = [f"{t:g}" for t in ticks]
             if _is_row(_which):
-                grid_py.grid_xaxis()
+                grid_py.grid_xaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
             else:
-                grid_py.grid_yaxis()
+                grid_py.grid_yaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
 
         grid_py.up_viewport()
 
@@ -797,7 +798,15 @@ def anno_points(
     x_arr = np.asarray(x, dtype=float)
     is_matrix = x_arr.ndim == 2
     n = x_arr.shape[0]
-    data_lim = _expand_data_lim(x_arr, ylim, extend)
+    # anno_points: data range without forced baseline=0
+    # (unlike anno_barplot which includes baseline in range)
+    if ylim is not None:
+        data_lim = tuple(ylim)
+    else:
+        lo = float(np.nanmin(x_arr))
+        hi = float(np.nanmax(x_arr))
+        rng = hi - lo if hi != lo else 1.0
+        data_lim = (lo - extend * rng, hi + extend * rng)
     merged_gp = _resolve_gp(gp)
     w, h = _default_width_height(which, width, height)
 
@@ -814,9 +823,11 @@ def anno_points(
         ni = len(index)
         subset = _x[index]
 
+        # R viewports default to clip="on" — points at boundaries are clipped
         grid_py.push_viewport(grid_py.Viewport(
             xscale=(0.5, ni + 0.5) if not _is_row(_which) else _data_lim,
             yscale=_data_lim if not _is_row(_which) else (0.5, ni + 0.5),
+            clip=True,
         ))
 
         if is_matrix:
@@ -860,11 +871,17 @@ def anno_points(
                 )
 
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black" if _border else "transparent"))
+        # Axis with clean tick labels
         if _axis and k == 1:
+            ticks = grid_py.grid_pretty(_data_lim)
+            ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
+            tick_labels = [f"{t:g}" for t in ticks]
             if _is_row(_which):
-                grid_py.grid_xaxis()
+                grid_py.grid_xaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
             else:
-                grid_py.grid_yaxis()
+                grid_py.grid_yaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
 
         grid_py.up_viewport()
 
@@ -1018,10 +1035,15 @@ def anno_lines(
 
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black" if _border else "transparent"))
         if _axis and k == 1:
+            ticks = grid_py.grid_pretty(_data_lim)
+            ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
+            tick_labels = [f"{t:g}" for t in ticks]
             if _is_row(_which):
-                grid_py.grid_xaxis()
+                grid_py.grid_xaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
             else:
-                grid_py.grid_yaxis()
+                grid_py.grid_yaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
 
         grid_py.up_viewport()
 

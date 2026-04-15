@@ -526,6 +526,26 @@ class Heatmap(AdditiveUnit):
         self.column_title_rot: float = column_title_rot
 
         # --- Names ---
+        # R Heatmap-class.R:671-674: if matrix has no rownames and
+        # row_labels is not provided, auto-hide row names.
+        # Same for columns (line 688-691).
+        if show_row_names and row_labels is None:
+            # Check if the input matrix had row names (pandas index, etc.)
+            has_rownames = False
+            if hasattr(matrix, 'index') and matrix.index is not None:
+                has_rownames = True  # pandas DataFrame
+            elif hasattr(matrix, 'dtype') and matrix.dtype.names:
+                has_rownames = True  # structured array
+            if not has_rownames:
+                show_row_names = False
+
+        if show_column_names and column_labels is None:
+            has_colnames = False
+            if hasattr(matrix, 'columns') and matrix.columns is not None:
+                has_colnames = True
+            if not has_colnames:
+                show_column_names = False
+
         self.show_row_names: bool = show_row_names
         self.show_column_names: bool = show_column_names
         self.row_labels: Optional[List[str]] = (

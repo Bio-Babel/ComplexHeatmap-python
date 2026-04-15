@@ -82,6 +82,7 @@ def grid_boxplot(
     box_width: float = 0.6,
     gp: Optional[Dict[str, Any]] = None,
     direction: str = "vertical",
+    default_units: str = "native",
 ) -> grid_py.GTree:
     """Create a boxplot grob (analogous to R's ``grid.boxplot``).
 
@@ -90,15 +91,17 @@ def grid_boxplot(
     value : numpy.ndarray
         1-D array of numeric values.
     pos : float
-        Position along the non-value axis in npc (0-1).
+        Position along the non-value axis.
     outline : bool
         Whether to include outlier points.
     box_width : float
-        Width of the box in npc units.
+        Width of the box.
     gp : dict, optional
         Graphical parameters (``col``, ``fill``, ``lwd``, etc.).
     direction : str
-        ``"vertical"`` or ``"horizontal"``.
+        ``"vertical"``, ``"horizontal"``, ``"x"`` or ``"y"``.
+    default_units : str
+        Unit type for coordinates (default ``"native"``).
 
     Returns
     -------
@@ -123,130 +126,66 @@ def grid_boxplot(
 
     half = box_width / 2.0
     children = grid_py.GList()
+    u = default_units
 
-    if direction == "vertical":
-        # Box
+    # Normalize direction aliases (anno_boxplot uses "x"/"y")
+    is_vertical = direction in ("vertical", "y")
+
+    if is_vertical:
         box = grid_py.rect_grob(
             x=pos, y=(q1 + q3) / 2,
-            width=box_width, height=iqr,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, fill=fill_color, lwd=lw),
-            name="box",
-        )
+            width=box_width, height=iqr, default_units=u,
+            gp=grid_py.Gpar(col=line_color, fill=fill_color, lwd=lw), name="box")
         children.append(box)
-
-        # Median line
-        median_line = grid_py.segments_grob(
-            x0=pos - half, y0=med,
-            x1=pos + half, y1=med,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="median",
-        )
-        children.append(median_line)
-
-        # Lower whisker
         children.append(grid_py.segments_grob(
-            x0=pos, y0=q1, x1=pos, y1=whisker_lo,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="whisker_lo",
-        ))
-        # Upper whisker
+            x0=pos - half, y0=med, x1=pos + half, y1=med, default_units=u,
+            gp=grid_py.Gpar(col=line_color, lwd=lw), name="median"))
         children.append(grid_py.segments_grob(
-            x0=pos, y0=q3, x1=pos, y1=whisker_hi,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="whisker_hi",
-        ))
-
-        # Caps
+            x0=pos, y0=q1, x1=pos, y1=whisker_lo, default_units=u,
+            gp=grid_py.Gpar(col=line_color, lwd=lw), name="whisker_lo"))
+        children.append(grid_py.segments_grob(
+            x0=pos, y0=q3, x1=pos, y1=whisker_hi, default_units=u,
+            gp=grid_py.Gpar(col=line_color, lwd=lw), name="whisker_hi"))
         cap = half * 0.5
         children.append(grid_py.segments_grob(
-            x0=pos - cap, y0=whisker_lo,
-            x1=pos + cap, y1=whisker_lo,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="cap_lo",
-        ))
+            x0=pos - cap, y0=whisker_lo, x1=pos + cap, y1=whisker_lo,
+            default_units=u, gp=grid_py.Gpar(col=line_color, lwd=lw), name="cap_lo"))
         children.append(grid_py.segments_grob(
-            x0=pos - cap, y0=whisker_hi,
-            x1=pos + cap, y1=whisker_hi,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="cap_hi",
-        ))
-
-        # Outliers
+            x0=pos - cap, y0=whisker_hi, x1=pos + cap, y1=whisker_hi,
+            default_units=u, gp=grid_py.Gpar(col=line_color, lwd=lw), name="cap_hi"))
         if len(outliers) > 0:
             children.append(grid_py.points_grob(
-                x=[pos] * len(outliers),
-                y=outliers.tolist(),
-                default_units="npc",
-                pch=1,
-                size=grid_py.Unit(2, "mm"),
-                gp=grid_py.Gpar(col=line_color),
-                name="outliers",
-            ))
+                x=[pos] * len(outliers), y=outliers.tolist(), default_units=u,
+                pch=1, size=grid_py.Unit(2, "mm"),
+                gp=grid_py.Gpar(col=line_color), name="outliers"))
     else:
-        # Horizontal boxplot
+        # Horizontal (direction="horizontal" or "x")
         box = grid_py.rect_grob(
             x=(q1 + q3) / 2, y=pos,
-            width=iqr, height=box_width,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, fill=fill_color, lwd=lw),
-            name="box",
-        )
+            width=iqr, height=box_width, default_units=u,
+            gp=grid_py.Gpar(col=line_color, fill=fill_color, lwd=lw), name="box")
         children.append(box)
-
-        median_line = grid_py.segments_grob(
-            x0=med, y0=pos - half,
-            x1=med, y1=pos + half,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="median",
-        )
-        children.append(median_line)
-
         children.append(grid_py.segments_grob(
-            x0=whisker_lo, y0=pos, x1=q1, y1=pos,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="whisker_lo",
-        ))
+            x0=med, y0=pos - half, x1=med, y1=pos + half, default_units=u,
+            gp=grid_py.Gpar(col=line_color, lwd=lw), name="median"))
         children.append(grid_py.segments_grob(
-            x0=q3, y0=pos, x1=whisker_hi, y1=pos,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="whisker_hi",
-        ))
-
+            x0=whisker_lo, y0=pos, x1=q1, y1=pos, default_units=u,
+            gp=grid_py.Gpar(col=line_color, lwd=lw), name="whisker_lo"))
+        children.append(grid_py.segments_grob(
+            x0=q3, y0=pos, x1=whisker_hi, y1=pos, default_units=u,
+            gp=grid_py.Gpar(col=line_color, lwd=lw), name="whisker_hi"))
         cap = half * 0.5
         children.append(grid_py.segments_grob(
-            x0=whisker_lo, y0=pos - cap,
-            x1=whisker_lo, y1=pos + cap,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="cap_lo",
-        ))
+            x0=whisker_lo, y0=pos - cap, x1=whisker_lo, y1=pos + cap,
+            default_units=u, gp=grid_py.Gpar(col=line_color, lwd=lw), name="cap_lo"))
         children.append(grid_py.segments_grob(
-            x0=whisker_hi, y0=pos - cap,
-            x1=whisker_hi, y1=pos + cap,
-            default_units="npc",
-            gp=grid_py.Gpar(col=line_color, lwd=lw),
-            name="cap_hi",
-        ))
-
+            x0=whisker_hi, y0=pos - cap, x1=whisker_hi, y1=pos + cap,
+            default_units=u, gp=grid_py.Gpar(col=line_color, lwd=lw), name="cap_hi"))
         if len(outliers) > 0:
             children.append(grid_py.points_grob(
-                x=outliers.tolist(),
-                y=[pos] * len(outliers),
-                default_units="npc",
-                pch=1,
-                size=grid_py.Unit(2, "mm"),
-                gp=grid_py.Gpar(col=line_color),
-                name="outliers",
-            ))
+                x=outliers.tolist(), y=[pos] * len(outliers), default_units=u,
+                pch=1, size=grid_py.Unit(2, "mm"),
+                gp=grid_py.Gpar(col=line_color), name="outliers"))
 
     return grid_py.GTree(children=children, name="boxplot")
 

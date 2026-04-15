@@ -738,6 +738,7 @@ class HeatmapList:
 
             # Compute fixed (non-body) component widths per heatmap
             fixed_widths_mm = []
+            is_pure_fixed = []  # True for HeatmapAnnotation (no null body)
             for ht in self.ht_list:
                 if isinstance(ht, _HeatmapCls):
                     fw = 0.0
@@ -750,8 +751,17 @@ class HeatmapList:
                             if hasattr(u, '_values'):
                                 fw += float(u._values[0])
                     fixed_widths_mm.append(fw)
+                    is_pure_fixed.append(False)
                 else:
-                    fixed_widths_mm.append(0.0)
+                    # HeatmapAnnotation: entirely fixed width (R line 110: size(ht))
+                    ha_w = getattr(ht, 'width', None)
+                    if ha_w is not None and isinstance(ha_w, (int, float)):
+                        fixed_widths_mm.append(float(ha_w))
+                    elif ha_w is not None and hasattr(ha_w, '_values'):
+                        fixed_widths_mm.append(float(ha_w._values[0]))
+                    else:
+                        fixed_widths_mm.append(15.0)  # reasonable default
+                    is_pure_fixed.append(True)
 
             total_fixed_mm = sum(fixed_widths_mm) + total_gap_mm
             remaining_mm = max(panel_w_mm - total_fixed_mm, 0.0)
@@ -760,8 +770,11 @@ class HeatmapList:
             # - width=NULL → equal share (R: unit(1,"npc") for each)
             # - width=numeric → use as null proportion (R: ncol-based)
             null_values = []
-            for ht in self.ht_list:
-                if isinstance(ht, _HeatmapCls):
+            for idx_ht, ht in enumerate(self.ht_list):
+                if is_pure_fixed[idx_ht]:
+                    # HeatmapAnnotation: no null body (all fixed)
+                    null_values.append(0.0)
+                elif isinstance(ht, _HeatmapCls):
                     user_w = getattr(ht, 'width', None)
                     if user_w is None:
                         # R Heatmap-class.R:966-967:
@@ -813,8 +826,18 @@ class HeatmapList:
                 ht._draw_into_viewport()
             elif hasattr(ht, "matrix") and ht.matrix is not None:
                 self._draw_single_heatmap(ht, ht_name)
+            elif hasattr(ht, "draw") and hasattr(ht, "anno_list"):
+                # HeatmapAnnotation: draw annotation tracks using the
+                # main heatmap's row order (R HeatmapList-draw_component.R:634)
+                main_idx = getattr(self, '_main_heatmap_index', 0)
+                main_ht = self.ht_list[main_idx] if main_idx < len(self.ht_list) else None
+                if main_ht and hasattr(main_ht, '_row_order_list') and main_ht._row_order_list:
+                    import numpy as _np
+                    index = _np.concatenate(main_ht._row_order_list)
+                else:
+                    index = _np.arange(10)  # fallback
+                ht.draw(index)
             else:
-                # HeatmapAnnotation or unknown type
                 _register_component(f"unknown_{ht_name}", f"heatmap_list_slot_{ht_name}")
 
             grid_py.up_viewport()
