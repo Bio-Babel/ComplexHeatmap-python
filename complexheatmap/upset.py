@@ -489,6 +489,7 @@ def upset_top_annotation(
     annotation_name: str = "Intersection\nsize",
     ylim: Optional[Tuple[float, float]] = None,
     axis_param: Optional[Dict[str, Any]] = None,
+    _comb_order: Optional[np.ndarray] = None,
     **kwargs: Any,
 ) -> Any:
     """Create the top barplot annotation for an UpSet plot.
@@ -527,6 +528,11 @@ def upset_top_annotation(
     from .annotation_functions import anno_barplot
 
     sizes = m.comb_sizes.copy().astype(float)
+    # Pre-reorder sizes when UpSet passes _comb_order so the barplot
+    # data matches the Heatmap's column_order display.
+    if _comb_order is not None:
+        sizes = sizes[_comb_order]
+
     fill_col = "black"
     if gp is not None:
         fill_col = gp.get("fill", gp.get("facecolor", "black"))
@@ -567,6 +573,7 @@ def upset_right_annotation(
     width: Optional[Any] = None,
     show_annotation_name: bool = True,
     annotation_name: str = "Set size",
+    _set_order: Optional[np.ndarray] = None,
     xlim: Optional[Tuple[float, float]] = None,
     axis_param: Optional[Dict[str, Any]] = None,
     **kwargs: Any,
@@ -606,13 +613,16 @@ def upset_right_annotation(
     from .annotation_functions import anno_barplot
 
     sizes = m.set_sizes.copy().astype(float)
+    if _set_order is not None:
+        sizes = sizes[_set_order]
+
     fill_col = "black"
     if gp is not None:
         fill_col = gp.get("fill", gp.get("facecolor", "black"))
 
     _width = width
     if _width is None:
-        _width = grid_py.Unit(3, "cm")
+        _width = grid_py.Unit(2, "cm")  # R default: 2cm when set_on_rows
     elif not isinstance(_width, grid_py.Unit):
         _width = grid_py.Unit(float(_width), "mm")
 
@@ -718,8 +728,59 @@ def upset_left_annotation(
 
 
 # ======================================================================
+# Internal helpers
+# ======================================================================
+
+
+def _gpar_type_none() -> grid_py.Gpar:
+    """Create a Gpar with ``type='none'`` to suppress cell-rect drawing.
+
+    Mirrors R's ``gpar(type = "none")`` used in ``Heatmap()`` calls by
+    ``UpSet()`` and ``oncoPrint()``.  grid_py's Gpar constructor does
+    not accept ``type`` as a named parameter, so we inject it directly.
+    """
+    gp = grid_py.Gpar()
+    gp._params["type"] = "none"
+    return gp
+
+
+def _order_comb_mat(m: CombMat, decreasing: bool = True) -> np.ndarray:
+    """Order combinations by degree first, then by set membership pattern.
+
+    Matches R's ``order.comb_mat()`` (Upset.R:1511-1530).  Sorts
+    primarily by combination degree, breaking ties by each set's
+    membership vector (row of ``comb_mat``).
+
+    Parameters
+    ----------
+    m : CombMat
+        Combination matrix.
+    decreasing : bool
+        If ``True`` (default), higher degree / more memberships come
+        first.
+
+    Returns
+    -------
+    numpy.ndarray
+        Integer index array giving the sorted order.
+    """
+    degrees = comb_degree(m).astype(float)
+    # np.lexsort sorts by the LAST key first (= primary key).
+    # R:  order(degree, row1, row2, ..., decreasing=TRUE)
+    # Py: lexsort([-rowN, ..., -row1, -degree])
+    keys: List[np.ndarray] = []
+    n_sets = m.comb_mat.shape[0]
+    for row_idx in range(n_sets - 1, -1, -1):
+        row = m.comb_mat[row_idx, :].astype(float)
+        keys.append(-row if decreasing else row)
+    keys.append(-degrees if decreasing else degrees)
+    return np.lexsort(keys)
+
+
+# ======================================================================
 # UpSet (main entry point)
 # ======================================================================
+
 
 def UpSet(
     m: CombMat,
@@ -810,28 +871,9 @@ def UpSet(
     """
     from .heatmap import Heatmap
 
-    # Default ordering
-    if comb_order is None:
-        comb_order = np.argsort(-m.comb_sizes)
-    else:
-        comb_order = np.asarray(comb_order)
-
-    if set_order is None:
-        set_order = np.argsort(-m.set_sizes)
-    else:
-        set_order = np.asarray(set_order)
-        # Convert string names to integer indices (R compatibility)
-        if set_order.dtype.kind in ('U', 'S', 'O'):
-            name_to_idx = {name: i for i, name in enumerate(m.set_names)}
-            set_order = np.array([name_to_idx[str(s)] for s in set_order], dtype=int)
-
-    # Default annotations
-    if top_annotation is None:
-        top_annotation = upset_top_annotation(m)
-    if right_annotation is None:
-        right_annotation = upset_right_annotation(m)
-
-    # Default colours
+    # ------------------------------------------------------------------
+    # Colour processing  (Bug #7: must happen before annotations)
+    # ------------------------------------------------------------------
     if comb_col is None:
         comb_col_arr: List[str] = ["black"] * m.n_comb
     elif isinstance(comb_col, str):
@@ -845,32 +887,75 @@ def UpSet(
     if row_names_gp is None and set_name_gp is not None:
         row_names_gp = set_name_gp
 
-    # Reorder the combination matrix
-    ordered_mat = m.comb_mat[:, comb_order][set_order, :]
+    # ------------------------------------------------------------------
+    # Default ordering  (Bug #5: match R's order.comb_mat)
+    # ------------------------------------------------------------------
+    if comb_order is None:
+        comb_order = _order_comb_mat(m)
+    else:
+        comb_order = np.asarray(comb_order)
+
+    if set_order is None:
+        set_order = np.argsort(-m.set_sizes)
+    else:
+        set_order = np.asarray(set_order)
+        if set_order.dtype.kind in ('U', 'S', 'O'):
+            name_to_idx = {name: idx for idx, name in enumerate(m.set_names)}
+            set_order = np.array([name_to_idx[str(s)] for s in set_order], dtype=int)
+
     n_sets = len(set_order)
     n_comb = len(comb_order)
 
-    # Build the numeric matrix for the Heatmap (sets x combinations).
-    # Value encodes: 0 = inactive, 1 = active.
-    heatmap_mat = ordered_mat.astype(float)
+    # ------------------------------------------------------------------
+    # Default annotations  (Bug #7: sync comb_col to top annotation)
+    # ------------------------------------------------------------------
+    if top_annotation is None:
+        # Pre-reorder colours to display order so the annotation
+        # barplot bars match the dot matrix columns.
+        _reord_col = [comb_col_arr[ci] for ci in comb_order]
+        top_annotation = upset_top_annotation(
+            m, gp={"fill": _reord_col, "col": _reord_col},
+            _comb_order=comb_order,
+        )
+    if right_annotation is None:
+        right_annotation = upset_right_annotation(m, _set_order=set_order)
 
-    # Row labels = set names in order
-    row_labels = [m.set_names[i] for i in set_order]
+    # ------------------------------------------------------------------
+    # Background colours  (Bug #1: alternating row stripes)
+    # R: if(length(bg_col)==1) bg_col = c(bg_col, "white")
+    #    bg_col = rep(bg_col, times=n_set)[1:n_set]
+    # ------------------------------------------------------------------
+    if isinstance(bg_col, str):
+        bg_col_list: List[str] = [bg_col, "white"]
+    else:
+        bg_col_list = list(bg_col)
+    bg_col_expanded = (bg_col_list * (n_sets // len(bg_col_list) + 1))[:n_sets]
 
-    # Column labels = combination binary names in order
+    # ------------------------------------------------------------------
+    # Matrix — pass ORIGINAL, let Heatmap reorder  (Bug #2, #3)
+    # R: Heatmap(m2, ..., row_order=set_order, column_order=comb_order)
+    # ------------------------------------------------------------------
+    heatmap_mat = m.comb_mat.astype(float)
+
+    # Labels in original order; Heatmap re-orders via row/column_order
+    row_labels = list(m.set_names)
     all_cnames = comb_name(m)
-    col_labels = [all_cnames[i] for i in comb_order]
+    col_labels = list(all_cnames)
 
-    # Colours for the ordered combinations
-    ordered_comb_col = [comb_col_arr[i] for i in comb_order]
-
-    # Capture closured variables for the layer_fun
-    _ordered_mat = ordered_mat
-    _ordered_comb_col = ordered_comb_col
+    # ------------------------------------------------------------------
+    # Closure variables for layer_fun
+    # ------------------------------------------------------------------
+    _orig_mat = m.comb_mat             # original binary matrix
+    _comb_col = comb_col_arr           # colours in original column order
     _pt_size = pt_size
     _lwd = lwd
     _bg_pt_col = bg_pt_col
+    _bg_col_exp = bg_col_expanded      # per display-row stripe colours
 
+    # ------------------------------------------------------------------
+    # layer_fun  (Bug #1 stripes, #9 single-call points)
+    # Matches R Upset.R:1388-1404 exactly.
+    # ------------------------------------------------------------------
     def _upset_layer_fun(
         j: np.ndarray,
         i: np.ndarray,
@@ -880,31 +965,67 @@ def UpSet(
         h: Any,
         fill: Any,
     ) -> None:
-        """Draw UpSet dots and connecting lines via grid_py."""
         n_cells = len(j)
         if n_cells == 0:
             return
 
-        # Determine local grid dimensions
-        unique_j = sorted(set(int(jj) for jj in j))
-        unique_i = sorted(set(int(ii) for ii in i))
-        n_local_cols = len(unique_j)
-        n_local_rows = len(unique_i)
+        # Grid dimensions  (R lines 1389-1390)
+        h0 = float(h[0]._values[0]) if hasattr(h[0], '_values') else float(h[0])
+        w0 = float(w[0]._values[0]) if hasattr(w[0], '_values') else float(w[0])
+        nr = max(1, round(1.0 / h0))
+        nc = max(1, round(1.0 / w0))
 
-        # Build a lookup from (col_idx, row_idx) -> position index
-        pos_map: Dict[Tuple[int, int], int] = {}
-        for idx in range(n_cells):
-            pos_map[(int(j[idx]), int(i[idx]))] = idx
+        # Unique indices preserving first-occurrence (display) order
+        seen_i: set = set()
+        unique_i: List[int] = []
+        for ii in i:
+            v = int(ii)
+            if v not in seen_i:
+                seen_i.add(v)
+                unique_i.append(v)
 
-        # Helper: extract float values from Unit objects for grid_points
-        def _units_to_floats(units):
-            """Convert a list of Unit objects to a list of floats (npc)."""
-            return [float(u._values[0]) if hasattr(u, '_values') else float(u)
-                    for u in units]
+        seen_j: set = set()
+        unique_j: List[int] = []
+        for jj in j:
+            v = int(jj)
+            if v not in seen_j:
+                seen_j.add(v)
+                unique_j.append(v)
 
-        # Draw background dots for all cells
-        all_x_f = _units_to_floats(x)
-        all_y_f = _units_to_floats(y)
+        # Build sub-matrix (display rows × display cols)  (R line 1391)
+        subm = np.zeros((len(unique_i), len(unique_j)), dtype=float)
+        for ri, ii in enumerate(unique_i):
+            for ci, jj in enumerate(unique_j):
+                subm[ri, ci] = float(_orig_mat[ii, jj])
+
+        # ---- Alternating background rectangles  (R lines 1392-1394) ----
+        for k in range(nr):
+            bg_c = _bg_col_exp[k] if k < len(_bg_col_exp) else "#F0F0F0"
+            y_center = (nr - k - 0.5) / nr
+            grid_py.grid_rect(
+                x=grid_py.Unit(0.5, "npc"),
+                y=grid_py.Unit(y_center, "npc"),
+                width=grid_py.Unit(1, "npc"),
+                height=grid_py.Unit(1.0 / nr, "npc"),
+                gp=grid_py.Gpar(fill=bg_c, col=None),
+                name=f"upset_bg_row_{k}",
+            )
+
+        # ---- All points with per-point colours  (R line 1395) ----
+        all_x_f = [float(u._values[0]) if hasattr(u, '_values') else float(u)
+                    for u in x]
+        all_y_f = [float(u._values[0]) if hasattr(u, '_values') else float(u)
+                    for u in y]
+
+        point_colors: List[str] = []
+        for k in range(n_cells):
+            ii, jj = int(i[k]), int(j[k])
+            if _orig_mat[ii, jj]:
+                point_colors.append(
+                    _comb_col[jj] if jj < len(_comb_col) else "black"
+                )
+            else:
+                point_colors.append(_bg_pt_col)
 
         if all_x_f:
             grid_py.grid_points(
@@ -913,59 +1034,48 @@ def UpSet(
                 default_units="npc",
                 pch=16,
                 size=_pt_size,
-                gp=grid_py.Gpar(col=_bg_pt_col, fill=_bg_pt_col),
-                name="upset_bg_dots",
+                gp=grid_py.Gpar(col=point_colors, fill=point_colors),
+                name="upset_dots",
             )
 
-        # Draw active dots and connectors per column
-        for col_idx in unique_j:
-            # Find active rows in this column
-            active_positions = []
-            for row_idx in unique_i:
-                key = (col_idx, row_idx)
-                if key in pos_map:
-                    pidx = pos_map[key]
-                    # Check if this cell is active in the ordered_mat
-                    # j values are 0-based column indices into the current slice
-                    # i values are 0-based row indices into the current slice
-                    if _ordered_mat[row_idx, col_idx]:
-                        active_positions.append(pidx)
-
-            # Determine colour for this column
-            col_color = "black"
-            if col_idx < len(_ordered_comb_col):
-                col_color = _ordered_comb_col[col_idx]
-
-            # Draw active dots
-            if active_positions:
-                active_x = _units_to_floats([x[p] for p in active_positions])
-                active_y = _units_to_floats([y[p] for p in active_positions])
-                grid_py.grid_points(
-                    x=active_x,
-                    y=active_y,
-                    default_units="npc",
-                    pch=16,
-                    size=_pt_size,
-                    gp=grid_py.Gpar(col=col_color, fill=col_color),
-                    name=f"upset_active_dots_{col_idx}",
+        # ---- Connector lines  (R lines 1396-1403) ----
+        for k in range(nc):
+            col_vals = subm[:, k]
+            if np.sum(col_vals) >= 2:
+                active_rows = np.where(col_vals > 0)[0]
+                i_min = int(active_rows[0])
+                i_max = int(active_rows[-1])
+                line_x = (k + 0.5) / nc
+                y1 = (nr - i_min - 0.5) / nr
+                y2 = (nr - i_max - 0.5) / nr
+                col_color = (
+                    _comb_col[unique_j[k]]
+                    if unique_j[k] < len(_comb_col)
+                    else "black"
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(line_x, "npc"),
+                    y0=grid_py.Unit(y1, "npc"),
+                    x1=grid_py.Unit(line_x, "npc"),
+                    y1=grid_py.Unit(y2, "npc"),
+                    gp=grid_py.Gpar(col=col_color, lwd=_lwd),
+                    name=f"upset_conn_{k}",
                 )
 
-                # Draw connector line between first and last active dot
-                if len(active_positions) >= 2:
-                    conn_x = active_x[0]
-                    grid_py.grid_segments(
-                        x0=grid_py.Unit(conn_x, "npc"),
-                        y0=grid_py.Unit(active_y[0], "npc"),
-                        x1=grid_py.Unit(conn_x, "npc"),
-                        y1=grid_py.Unit(active_y[-1], "npc"),
-                        gp=grid_py.Gpar(col=col_color, lwd=_lwd),
-                        name=f"upset_connector_{col_idx}",
-                    )
+    # ------------------------------------------------------------------
+    # Colour mapping  (Bug #8: correct semantics)
+    # R: col = c("0" = bg_pt_col, "1" = comb_col[1])
+    # ------------------------------------------------------------------
+    col_map = {
+        0.0: _bg_pt_col,
+        1.0: comb_col_arr[0] if comb_col_arr else "black",
+    }
 
-    # Build colour mapping: all cells get the background colour;
-    # the layer_fun handles the actual visual encoding.
-    col_map = {0.0: bg_col, 1.0: bg_col}
-
+    # ------------------------------------------------------------------
+    # Heatmap construction  (Bug #2: native ordering, Bug #4: type=none)
+    # R: Heatmap(m2, rect_gp=gpar(type="none"), row_order=set_order,
+    #            column_order=comb_order, ...)
+    # ------------------------------------------------------------------
     ht = Heatmap(
         matrix=heatmap_mat,
         col=col_map,
@@ -979,12 +1089,12 @@ def UpSet(
         column_names_rot=comb_name_rot,
         cluster_rows=False,
         cluster_columns=False,
-        row_order=list(range(n_sets)),
-        column_order=list(range(n_comb)),
+        row_order=list(set_order),
+        column_order=list(comb_order),
         top_annotation=top_annotation,
         right_annotation=right_annotation,
         left_annotation=left_annotation,
-        rect_gp=grid_py.Gpar(col=bg_col, fill=bg_col),
+        rect_gp=_gpar_type_none(),
         layer_fun=_upset_layer_fun,
         show_heatmap_legend=False,
         column_title=column_title,
