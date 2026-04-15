@@ -202,6 +202,25 @@ class SingleAnnotation:
             # Custom annotation function provided
             if isinstance(fun, AnnotationFunction):
                 self._anno_fun: AnnotationFunction = fun
+                # If the AnnotationFunction was created with a different `which`
+                # (e.g., anno_barplot() defaults to which="column" but used in
+                # rowAnnotation), swap width/height for the correct orientation.
+                af_which = getattr(fun, 'which', None)
+                if af_which is not None and af_which != which:
+                    self._anno_fun.which = which
+                    old_w = self._anno_fun.width
+                    old_h = self._anno_fun.height
+
+                    def _is_npc(u):
+                        return hasattr(u, '_units') and len(u._units) > 0 and u._units[0] == 'npc'
+
+                    # Swap: column→row means height→width, width→height
+                    if which == "row" and not _is_npc(old_h):
+                        self._anno_fun.width = old_h   # short axis
+                        self._anno_fun.height = grid_py.Unit(1, "npc")  # long axis
+                    elif which == "column" and not _is_npc(old_w):
+                        self._anno_fun.height = old_w
+                        self._anno_fun.width = grid_py.Unit(1, "npc")
             elif callable(fun):
                 self._anno_fun = AnnotationFunction(
                     fun=fun,

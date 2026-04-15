@@ -1207,11 +1207,18 @@ class Heatmap(AdditiveUnit):
         """
         zero = grid_py.Unit(0, "mm")
         if component == "column_title_top":
-            if self.column_title is not None and self.column_title_side == "top":
+            has_title = self.column_title is not None
+            # Auto-generate title for split heatmaps
+            if not has_title and self._column_order_list and len(self._column_order_list) > 1:
+                has_title = True
+            if has_title and self.column_title_side == "top":
                 return grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
             return zero
         if component == "column_title_bottom":
-            if self.column_title is not None and self.column_title_side == "bottom":
+            has_title = self.column_title is not None
+            if not has_title and self._column_order_list and len(self._column_order_list) > 1:
+                has_title = True
+            if has_title and self.column_title_side == "bottom":
                 return grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
             return zero
         if component == "column_dend_top":
@@ -1268,11 +1275,17 @@ class Heatmap(AdditiveUnit):
         """Return the width of a given component."""
         zero = grid_py.Unit(0, "mm")
         if component == "row_title_left":
-            if self.row_title is not None and self.row_title_side == "left":
+            has_title = self.row_title is not None
+            if not has_title and self._row_order_list and len(self._row_order_list) > 1:
+                has_title = True
+            if has_title and self.row_title_side == "left":
                 return grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
             return zero
         if component == "row_title_right":
-            if self.row_title is not None and self.row_title_side == "right":
+            has_title = self.row_title is not None
+            if not has_title and self._row_order_list and len(self._row_order_list) > 1:
+                has_title = True
+            if has_title and self.row_title_side == "right":
                 return grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
             return zero
         if component == "row_dend_left":
@@ -2047,7 +2060,12 @@ class Heatmap(AdditiveUnit):
         row_components: List[str],
         col_components: List[str],
     ) -> None:
-        if self.column_title is None:
+        # Auto-generate split titles
+        n_col_slices = len(self._column_order_list) if self._column_order_list else 1
+        column_title = self.column_title
+        if column_title is None and n_col_slices > 1:
+            column_title = [str(i + 1) for i in range(n_col_slices)]
+        if column_title is None:
             return
 
         comp = f"column_title_{self.column_title_side}"
@@ -2064,23 +2082,35 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(vp)
 
-        title = self.column_title
-        if isinstance(title, list):
-            title = title[0] if len(title) == 1 else ", ".join(title)
-
         gp = self.column_title_gp
         if isinstance(gp, dict):
             gp = grid_py.Gpar(**gp)
 
-        grid_py.grid_text(
-            label=title,
-            x=0.5,
-            y=0.5,
-            default_units="npc",
-            rot=self.column_title_rot,
-            gp=gp,
-            name=f"{self.name}_col_title_text",
-        )
+        titles = column_title if isinstance(column_title, list) else [column_title]
+
+        if len(titles) == 1 or n_col_slices <= 1:
+            grid_py.grid_text(
+                label=titles[0], x=0.5, y=0.5, default_units="npc",
+                rot=self.column_title_rot, gp=gp,
+                name=f"{self.name}_col_title_text",
+            )
+        else:
+            slice_layout = self._layout["slice"]
+            slice_x = slice_layout["x"]
+            slice_width = slice_layout["width"]
+            for i in range(min(len(titles), n_col_slices)):
+                slice_vp = grid_py.Viewport(
+                    x=slice_x[i], y=grid_py.Unit(0, "npc"),
+                    width=slice_width[i], height=grid_py.Unit(1, "npc"),
+                    just=["left", "bottom"],
+                    name=f"{self.name}_col_title_{i+1}",
+                )
+                grid_py.push_viewport(slice_vp)
+                grid_py.grid_text(
+                    label=titles[i], x=0.5, y=0.5,
+                    default_units="npc", rot=0, gp=gp,
+                )
+                grid_py.up_viewport()
 
         grid_py.up_viewport()
 
@@ -2089,7 +2119,19 @@ class Heatmap(AdditiveUnit):
         row_components: List[str],
         col_components: List[str],
     ) -> None:
-        if self.row_title is None:
+        """Draw row title(s).
+
+        Port of R ``Heatmap-layout.R:141-149``:
+        - Single title + multiple slices → draw once spanning all slices
+        - Multiple titles (one per slice) → draw each in its slice
+        - When row_km/row_split is used, R auto-generates per-slice titles
+        """
+        # Auto-generate split titles if row_title is None but we have multiple slices
+        n_row_slices = len(self._row_order_list) if self._row_order_list else 1
+        row_title = self.row_title
+        if row_title is None and n_row_slices > 1:
+            row_title = [str(i + 1) for i in range(n_row_slices)]
+        if row_title is None:
             return
 
         comp = f"row_title_{self.row_title_side}"
@@ -2106,23 +2148,41 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(vp)
 
-        title = self.row_title
-        if isinstance(title, list):
-            title = title[0] if len(title) == 1 else ", ".join(title)
-
         gp = self.row_title_gp
         if isinstance(gp, dict):
             gp = grid_py.Gpar(**gp)
 
-        grid_py.grid_text(
-            label=title,
-            x=0.5,
-            y=0.5,
-            default_units="npc",
-            rot=self.row_title_rot,
-            gp=gp,
-            name=f"{self.name}_row_title_text",
-        )
+        titles = row_title if isinstance(row_title, list) else [row_title]
+
+        if len(titles) == 1 or n_row_slices <= 1:
+            # Single title centered in the row_title column
+            grid_py.grid_text(
+                label=titles[0],
+                x=0.5, y=0.5, default_units="npc",
+                rot=self.row_title_rot, gp=gp,
+                name=f"{self.name}_row_title_text",
+            )
+        else:
+            # Per-slice titles (R Heatmap-layout.R:145-147)
+            slice_layout = self._layout["slice"]
+            slice_y = slice_layout["y"]
+            slice_height = slice_layout["height"]
+            for i in range(min(len(titles), n_row_slices)):
+                slice_vp = grid_py.Viewport(
+                    x=grid_py.Unit(0, "npc"),
+                    y=slice_y[i],
+                    width=grid_py.Unit(1, "npc"),
+                    height=slice_height[i],
+                    just=["left", "top"],
+                    name=f"{self.name}_row_title_{i+1}",
+                )
+                grid_py.push_viewport(slice_vp)
+                grid_py.grid_text(
+                    label=titles[i], x=0.5, y=0.5,
+                    default_units="npc",
+                    rot=self.row_title_rot, gp=gp,
+                )
+                grid_py.up_viewport()
 
         grid_py.up_viewport()
 

@@ -305,7 +305,13 @@ def anno_simple(
     n = x_arr.shape[0]
     nc = x_arr.shape[1] if input_is_matrix else 1
 
-    anno_size = simple_anno_size or _DEFAULT_SIZE
+    # R: simple_anno_size defaults to ht_opt$simple_anno_size = 5mm
+    # _DEFAULT_SIZE (10mm) is for barplot/points, not simple annotations
+    if simple_anno_size is not None:
+        anno_size = simple_anno_size
+    else:
+        from ._globals import ht_opt as _ht_opt
+        anno_size = float(_ht_opt("simple_anno_size"))
     w, h = _default_width_height(which, width, height, anno_size * nc)
     merged_gp = _resolve_gp(gp)
 
@@ -823,7 +829,7 @@ def anno_points(
                         x=grid_py.Unit(col_vals, "native"),
                         y=grid_py.Unit(positions, "native"),
                         pch=_pch,
-                        size=grid_py.Unit(_size or 1, "mm") if _size else None,
+                        size=grid_py.Unit(_size or 2, "mm"),
                         gp=_to_gpar(**_gp),
                     )
                 else:
@@ -831,7 +837,7 @@ def anno_points(
                         x=grid_py.Unit(positions, "native"),
                         y=grid_py.Unit(col_vals, "native"),
                         pch=_pch,
-                        size=grid_py.Unit(_size or 1, "mm") if _size else None,
+                        size=grid_py.Unit(_size or 2, "mm"),
                         gp=_to_gpar(**_gp),
                     )
         else:
@@ -841,7 +847,7 @@ def anno_points(
                     x=grid_py.Unit(subset, "native"),
                     y=grid_py.Unit(positions, "native"),
                     pch=_pch,
-                    size=grid_py.Unit(_size or 1, "mm") if _size else None,
+                    size=grid_py.Unit(_size or 2, "mm"),
                     gp=_to_gpar(**_gp),
                 )
             else:
@@ -849,7 +855,7 @@ def anno_points(
                     x=grid_py.Unit(positions, "native"),
                     y=grid_py.Unit(subset, "native"),
                     pch=_pch,
-                    size=grid_py.Unit(_size or 1, "mm") if _size else None,
+                    size=grid_py.Unit(_size or 2, "mm"),
                     gp=_to_gpar(**_gp),
                 )
 
