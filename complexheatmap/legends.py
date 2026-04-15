@@ -212,6 +212,32 @@ class Legends:
         if self.grob is not None:
             grid_py.grid_draw(self.grob)
 
+    def _repr_png_(self) -> bytes:
+        """Jupyter notebook PNG display of the legend."""
+        if self.grob is None:
+            return b""
+        # Measure legend size
+        w_mm = getattr(self.grob, '_explicit_width_mm', 30.0)
+        h_mm = getattr(self.grob, '_explicit_height_mm', 40.0)
+        # Add margin
+        w_in = (w_mm + 10) / 25.4
+        h_in = (h_mm + 10) / 25.4
+        w_in = max(w_in, 1.5)
+        h_in = max(h_in, 1.5)
+
+        grid_py.grid_newpage(width=w_in, height=h_in, dpi=150)
+        grid_py.push_viewport(grid_py.Viewport(
+            x=grid_py.Unit(0.5, "npc"),
+            y=grid_py.Unit(0.5, "npc"),
+            width=grid_py.Unit(w_mm, "mm"),
+            height=grid_py.Unit(h_mm, "mm"),
+            name="legend_preview",
+        ))
+        self.draw()
+        grid_py.up_viewport()
+        renderer = grid_py.get_state().get_renderer()
+        return renderer.to_png_bytes()
+
     def __repr__(self) -> str:
         if self.type == "single_legend":
             return "A single legend"
