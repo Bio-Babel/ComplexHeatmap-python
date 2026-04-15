@@ -572,12 +572,20 @@ def anno_barplot(
         # Border rect
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
 
-        # Axis
+        # Axis (with clean tick labels)
         if _axis and k == 1:
+            # Use grid_pretty for clean tick values, matching R
+            ticks = grid_py.grid_pretty(_data_lim)
+            # Filter ticks within range
+            ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
+            # Format labels to avoid float precision noise
+            tick_labels = [f"{t:g}" for t in ticks]
             if _is_row(_which):
-                grid_py.grid_xaxis()
+                grid_py.grid_xaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
             else:
-                grid_py.grid_yaxis()
+                grid_py.grid_yaxis(at=ticks, label=tick_labels,
+                                    gp=grid_py.Gpar(fontsize=7))
 
         grid_py.up_viewport()
 

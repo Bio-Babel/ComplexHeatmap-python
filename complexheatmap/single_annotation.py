@@ -39,6 +39,13 @@ def _infer_color_mapping(
 ) -> Optional[ColorMapping]:
     """Build a :class:`ColorMapping` from *col* and *value*.
 
+    Port of R ``SingleAnnotation-class.R:484-520`` and ``utils.R:62-125
+    default_col()``.
+
+    When *col* is ``None``, R auto-generates colours:
+    - Discrete (string/factor): random categorical palette
+    - Continuous (numeric): ``colorRamp2(range, c("white", rand_color))``
+
     Parameters
     ----------
     value : numpy.ndarray
@@ -54,14 +61,41 @@ def _infer_color_mapping(
     -------
     ColorMapping or None
     """
-    if col is None:
-        return None
     if isinstance(col, ColorMapping):
         return col
     if isinstance(col, dict):
         return ColorMapping(name=name, colors=col, na_col=na_col)
-    if callable(col):
+    if callable(col) and col is not None:
         return ColorMapping(name=name, col_fun=col, na_col=na_col)
+
+    # col is None → auto-generate (R default_col, utils.R:62-125)
+    if col is None and value is not None:
+        flat = np.asarray(value).ravel()
+        # Remove NaN
+        valid = flat[~np.isnan(flat)] if np.issubdtype(flat.dtype, np.floating) else flat[flat != None]
+
+        if len(valid) == 0:
+            return None
+
+        # Check if discrete (string/object dtype)
+        if valid.dtype.kind in ('U', 'S', 'O'):
+            # Discrete: auto-generate categorical colours
+            from ._color import rand_color
+            levels = list(dict.fromkeys(valid))  # unique, order-preserving
+            colors = rand_color(len(levels))
+            color_map = dict(zip(levels, colors))
+            return ColorMapping(name=name, colors=color_map, na_col=na_col)
+        elif np.issubdtype(valid.dtype, np.number):
+            # Continuous: colorRamp2(range, c("white", rand_color))
+            # R: utils.R:120-121
+            from ._color import color_ramp2, rand_color
+            rc = rand_color(1)[0]
+            vmin, vmax = float(valid.min()), float(valid.max())
+            if vmin == vmax:
+                vmax = vmin + 1.0
+            col_fun = color_ramp2([vmin, vmax], ["white", rc])
+            return ColorMapping(name=name, col_fun=col_fun, na_col=na_col)
+
     return None
 
 
@@ -192,10 +226,17 @@ class SingleAnnotation:
             )
             self._is_anno_matrix = self._value.ndim == 2
 
-            # Extract col for anno_simple
+            # Extract col for anno_simple from the inferred ColorMapping
             col_arg = col
             if isinstance(col, ColorMapping):
                 col_arg = col.color_map if col.is_discrete else col._col_fun
+            elif col is None and self._color_mapping is not None:
+                # Auto-generated ColorMapping: pass its function/dict to anno_simple
+                cm = self._color_mapping
+                if cm.is_discrete:
+                    col_arg = cm.color_map
+                elif cm._col_fun is not None:
+                    col_arg = cm._col_fun
 
             self._anno_fun = anno_simple(
                 x=self._value,
@@ -271,7 +312,9 @@ class SingleAnnotation:
         k: int = 1,
         n: int = 1,
     ) -> None:
-        """Draw the annotation track.
+        """Draw the annotation track + name label.
+
+        Port of R ``SingleAnnotation-class.R:606-713``.
 
         Parameters
         ----------
@@ -283,6 +326,57 @@ class SingleAnnotation:
             Total number of slices.
         """
         self._anno_fun.draw(index, k=k, n=n)
+
+        # Draw annotation name label (R line 671-712)
+        if not self.show_name:
+            return
+        if not self.name:
+            return
+
+        # For split heatmaps: only draw name on the appropriate slice
+        draw_name = True
+        if n > 1:
+            side = self.name_side
+            if self.which == "row":
+                draw_name = (k == n and side == "bottom") or (k == 1 and side == "top")
+            elif self.which == "column":
+                draw_name = (k == 1 and side == "left") or (k == n and side == "right")
+
+        if not draw_name:
+            return
+
+        # Compute name position (R SingleAnnotation-class.R:268-340)
+        offset = grid_py.Unit(1, "mm")  # default name_offset
+        name_gp = grid_py.Gpar(fontsize=10)
+
+        if self.which == "column":
+            if self.name_side == "right":
+                x = grid_py.Unit(1, "npc") + offset
+                y = grid_py.Unit(0.5, "npc")
+                just = "left"
+                rot = 0
+            else:  # left
+                x = grid_py.Unit(0, "npc") - offset
+                y = grid_py.Unit(0.5, "npc")
+                just = "right"
+                rot = 0
+        else:  # row
+            if self.name_side == "bottom":
+                x = grid_py.Unit(0.5, "npc")
+                y = grid_py.Unit(0, "npc") - offset
+                just = "right"
+                rot = 90
+            else:  # top
+                x = grid_py.Unit(0.5, "npc")
+                y = grid_py.Unit(1, "npc") + offset
+                just = "left"
+                rot = 90
+
+        grid_py.grid_text(
+            label=self.name,
+            x=x, y=y, just=just, rot=rot,
+            gp=name_gp,
+        )
 
     # ------------------------------------------------------------------
     # Subsetting

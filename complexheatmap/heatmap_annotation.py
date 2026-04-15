@@ -353,6 +353,10 @@ class HeatmapAnnotation:
     ) -> None:
         """Draw all annotation tracks using grid_py viewports.
 
+        Port of R ``HeatmapAnnotation-class.R:650-727``.
+        Each track gets its own viewport sized by ``anno_size[i]``
+        (individual track height/width), not equal division.
+
         Parameters
         ----------
         index : array-like of int
@@ -367,25 +371,50 @@ class HeatmapAnnotation:
         if n_annos == 0:
             return
 
-        for i, sa in enumerate(anno_items):
-            # Create a viewport for each annotation track
+        # Collect individual track sizes (R: object@anno_size)
+        anno_sizes_mm = []
+        for sa in anno_items:
+            sz = None
             if self._which == "column":
-                # Stack vertically
+                sz = getattr(sa, 'height', None)
+            else:
+                sz = getattr(sa, 'width', None)
+            if sz is not None and isinstance(sz, (int, float)):
+                anno_sizes_mm.append(float(sz))
+            elif sz is not None and hasattr(sz, '_values'):
+                anno_sizes_mm.append(float(sz._values[0]))
+            else:
+                # Default: simple_anno_size from options
+                anno_sizes_mm.append(float(ht_opt("simple_anno_size")))
+
+        gap_mm = float(self.gap) if isinstance(self.gap, (int, float)) else 1.0
+        total_size_mm = sum(anno_sizes_mm) + gap_mm * max(n_annos - 1, 0)
+
+        for i, sa in enumerate(anno_items):
+            sz_mm = anno_sizes_mm[i]
+            sz_frac = sz_mm / total_size_mm if total_size_mm > 0 else 1.0 / n_annos
+
+            if self._which == "column":
+                # R line 697-698: stack from top, each track positioned by cumulative size
+                # y = sum(anno_size[i:n]) + sum(gap[i:n]) - gap[n]
+                below_mm = sum(anno_sizes_mm[i+1:]) + gap_mm * max(n_annos - 1 - i, 0)
+                y_frac = below_mm / total_size_mm if total_size_mm > 0 else 0
+
                 grid_py.push_viewport(grid_py.Viewport(
-                    x=grid_py.Unit(0, "npc"),
-                    y=grid_py.Unit(1 - (i + 1) / n_annos, "npc"),
-                    width=grid_py.Unit(1, "npc"),
-                    height=grid_py.Unit(1.0 / n_annos, "npc"),
-                    just=["left", "bottom"],
+                    y=grid_py.Unit(y_frac, "npc"),
+                    height=grid_py.Unit(sz_frac, "npc"),
+                    just=["center", "bottom"],
                 ))
             else:
-                # Stack horizontally
+                # R line 709: stack from left
+                # x = sum(anno_size[1:i]) + sum(gap[1:i]) - gap[i]
+                left_mm = sum(anno_sizes_mm[:i]) + gap_mm * i
+                x_frac = left_mm / total_size_mm if total_size_mm > 0 else 0
+
                 grid_py.push_viewport(grid_py.Viewport(
-                    x=grid_py.Unit(i / n_annos, "npc"),
-                    y=grid_py.Unit(0, "npc"),
-                    width=grid_py.Unit(1.0 / n_annos, "npc"),
-                    height=grid_py.Unit(1, "npc"),
-                    just=["left", "bottom"],
+                    x=grid_py.Unit(x_frac, "npc"),
+                    width=grid_py.Unit(sz_frac, "npc"),
+                    just=["left", "center"],
                 ))
 
             sa.draw(index, k=k, n=n)
