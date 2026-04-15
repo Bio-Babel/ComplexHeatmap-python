@@ -1248,9 +1248,20 @@ class Heatmap(AdditiveUnit):
             has_title = self.column_title is not None
             if not has_title and self._column_order_list and len(self._column_order_list) > 1:
                 has_title = True
+            h = zero
             if has_title and self.column_title_side == "bottom":
-                return grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
-            return zero
+                h = grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
+            # Reserve space for row annotation extended (axis + name)
+            # that overflows below the heatmap body (R extended mechanism).
+            bottom_ext = 0.0
+            for anno_attr in ("left_annotation", "right_annotation"):
+                ha = getattr(self, anno_attr, None)
+                if ha is not None:
+                    ext = getattr(ha, "extended", (0, 0, 0, 0))
+                    bottom_ext = max(bottom_ext, ext[2])  # bottom
+            if bottom_ext > 0:
+                h = h + grid_py.Unit(bottom_ext, "mm")
+            return h
         if component == "column_dend_top":
             if self.show_column_dend and self.column_dend_side == "top" and self._should_cluster_columns():
                 return self.column_dend_height
@@ -1276,26 +1287,20 @@ class Heatmap(AdditiveUnit):
                 padding = 1.0  # DIMNAME_PADDING (R default = 1mm)
                 return grid_py.Unit(h + padding * 2, "mm")
             return zero
-        if component == "top_annotation":
-            if self.top_annotation is not None:
-                h = self.top_annotation.height
+        if component in ("top_annotation", "bottom_annotation"):
+            ha = self.top_annotation if component == "top_annotation" else self.bottom_annotation
+            if ha is not None:
+                h = ha.height
                 if h is not None and isinstance(h, (int, float)):
-                    return grid_py.Unit(float(h), "mm")
-                if h is not None and hasattr(h, '_values'):
-                    return h
-                # Fallback: n_tracks * 7mm + gaps
-                n = len(self.top_annotation.anno_list) if hasattr(self.top_annotation, 'anno_list') else 1
-                return grid_py.Unit(max(n * 7, 15), "mm")
-            return zero
-        if component == "bottom_annotation":
-            if self.bottom_annotation is not None:
-                h = self.bottom_annotation.height
-                if h is not None and isinstance(h, (int, float)):
-                    return grid_py.Unit(float(h), "mm")
-                if h is not None and hasattr(h, '_values'):
-                    return h
-                n = len(self.bottom_annotation.anno_list) if hasattr(self.bottom_annotation, 'anno_list') else 1
-                return grid_py.Unit(max(n * 7, 15), "mm")
+                    h_unit = grid_py.Unit(float(h), "mm")
+                elif h is not None and hasattr(h, '_values'):
+                    h_unit = h
+                else:
+                    n = len(ha.anno_list) if hasattr(ha, 'anno_list') else 1
+                    h_unit = grid_py.Unit(max(n * 7, 15), "mm")
+                # R Heatmap-class.R:843,869: += COLUMN_ANNO_PADDING
+                h_unit = h_unit + grid_py.Unit(float(ht_opt("COLUMN_ANNO_PADDING")), "mm")
+                return h_unit
             return zero
         if component == "heatmap_body":
             return grid_py.Unit(1, "null")
@@ -1308,9 +1313,20 @@ class Heatmap(AdditiveUnit):
             has_title = self.row_title is not None
             if not has_title and self._row_order_list and len(self._row_order_list) > 1:
                 has_title = True
+            w = zero
             if has_title and self.row_title_side == "left":
-                return grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
-            return zero
+                w = grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines")
+            # Reserve space for column annotation extended (name label)
+            # that overflows to the left (R extended mechanism).
+            left_ext = 0.0
+            for anno_attr in ("top_annotation", "bottom_annotation"):
+                ha = getattr(self, anno_attr, None)
+                if ha is not None:
+                    ext = getattr(ha, "extended", (0, 0, 0, 0))
+                    left_ext = max(left_ext, ext[3])  # left
+            if left_ext > 0:
+                w = w + grid_py.Unit(left_ext, "mm")
+            return w
         if component == "row_title_right":
             has_title = self.row_title is not None
             if not has_title and self._row_order_list and len(self._row_order_list) > 1:
@@ -1343,25 +1359,20 @@ class Heatmap(AdditiveUnit):
                 padding = 1.0  # DIMNAME_PADDING
                 return grid_py.Unit(w + padding * 2, "mm")
             return zero
-        if component == "left_annotation":
-            if self.left_annotation is not None:
-                w = self.left_annotation.width
+        if component in ("left_annotation", "right_annotation"):
+            ha = self.left_annotation if component == "left_annotation" else self.right_annotation
+            if ha is not None:
+                w = ha.width
                 if w is not None and isinstance(w, (int, float)):
-                    return grid_py.Unit(float(w), "mm")
-                if w is not None and hasattr(w, '_values'):
-                    return w
-                n = len(self.left_annotation.anno_list) if hasattr(self.left_annotation, 'anno_list') else 1
-                return grid_py.Unit(max(n * 7, 15), "mm")
-            return zero
-        if component == "right_annotation":
-            if self.right_annotation is not None:
-                w = self.right_annotation.width
-                if w is not None and isinstance(w, (int, float)):
-                    return grid_py.Unit(float(w), "mm")
-                if w is not None and hasattr(w, '_values'):
-                    return w
-                n = len(self.right_annotation.anno_list) if hasattr(self.right_annotation, 'anno_list') else 1
-                return grid_py.Unit(max(n * 7, 15), "mm")
+                    w_unit = grid_py.Unit(float(w), "mm")
+                elif w is not None and hasattr(w, '_values'):
+                    w_unit = w
+                else:
+                    n = len(ha.anno_list) if hasattr(ha, 'anno_list') else 1
+                    w_unit = grid_py.Unit(max(n * 7, 15), "mm")
+                # R Heatmap-class.R:895,921: += ROW_ANNO_PADDING
+                w_unit = w_unit + grid_py.Unit(float(ht_opt("ROW_ANNO_PADDING")), "mm")
+                return w_unit
             return zero
         if component == "heatmap_body":
             return grid_py.Unit(1, "null")
@@ -1596,6 +1607,7 @@ class Heatmap(AdditiveUnit):
                     width=slice_width[ci],
                     height=slice_height[ri],
                     just=["left", "top"],
+                    clip=True,  # R default: clip cell content to body
                     name=f"{self.name}_heatmap_body_{ri + 1}_{ci + 1}",
                 )
                 grid_py.push_viewport(slice_vp)
@@ -2261,6 +2273,9 @@ class Heatmap(AdditiveUnit):
         row_index = np.concatenate(self._row_order_list) if self._row_order_list else np.arange(self.matrix.shape[0])
         col_index = np.concatenate(self._column_order_list) if self._column_order_list else np.arange(self.matrix.shape[1])
 
+        _col_pad = grid_py.Unit(float(ht_opt("COLUMN_ANNO_PADDING")), "mm")
+        _row_pad = grid_py.Unit(float(ht_opt("ROW_ANNO_PADDING")), "mm")
+
         for anno_attr, comp_list, comp_name, pos_row, pos_col, index in [
             ("top_annotation", row_components, "top_annotation", None, body_col, col_index),
             ("bottom_annotation", row_components, "bottom_annotation", None, body_col, col_index),
@@ -2276,13 +2291,46 @@ class Heatmap(AdditiveUnit):
             if pos_col is None:
                 pos_col = comp_list.index(comp_name) + 1
 
+            # Push layout-cell viewport
             vp_name = f"{self.name}_{comp_name}"
             vp = grid_py.Viewport(
                 layout_pos_row=pos_row,
                 layout_pos_col=pos_col,
+                clip=False,
                 name=vp_name,
             )
             grid_py.push_viewport(vp)
+
+            # Push inner viewport with padding gap (R Heatmap-layout.R:354-417)
+            # The gap separates the annotation from the heatmap body.
+            if comp_name == "top_annotation":
+                inner_vp = grid_py.Viewport(
+                    y=_col_pad, height=grid_py.Unit(1, "npc") - _col_pad,
+                    just=["center", "bottom"], clip=False,
+                    name=f"{vp_name}_inner",
+                )
+            elif comp_name == "bottom_annotation":
+                inner_vp = grid_py.Viewport(
+                    y=grid_py.Unit(0, "npc"),
+                    height=grid_py.Unit(1, "npc") - _col_pad,
+                    just=["center", "bottom"], clip=False,
+                    name=f"{vp_name}_inner",
+                )
+            elif comp_name == "left_annotation":
+                inner_vp = grid_py.Viewport(
+                    x=grid_py.Unit(0, "npc"),
+                    width=grid_py.Unit(1, "npc") - _row_pad,
+                    just=["left", "center"], clip=False,
+                    name=f"{vp_name}_inner",
+                )
+            else:  # right_annotation
+                inner_vp = grid_py.Viewport(
+                    x=_row_pad,
+                    width=grid_py.Unit(1, "npc") - _row_pad,
+                    just=["left", "center"], clip=False,
+                    name=f"{vp_name}_inner",
+                )
+            grid_py.push_viewport(inner_vp)
             if hasattr(ha, 'draw'):
                 ha.draw(index=index, k=1, n=1)
 
@@ -2291,7 +2339,8 @@ class Heatmap(AdditiveUnit):
             for anno_name in anno_list:
                 _register_component(f"annotation_{anno_name}", vp_name)
 
-            grid_py.up_viewport()
+            grid_py.up_viewport()  # inner_vp
+            grid_py.up_viewport()  # layout cell vp
 
     # ------------------------------------------------------------------
     # make_row_cluster / make_column_cluster (R-compatible aliases)

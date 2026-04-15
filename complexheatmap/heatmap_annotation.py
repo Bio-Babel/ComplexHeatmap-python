@@ -222,6 +222,11 @@ class HeatmapAnnotation:
             s_show_legend = show_legend_list[idx] if idx < len(show_legend_list) else True
 
             if isinstance(anno_val, AnnotationFunction):
+                # If the AnnotationFunction explicitly sets show_name=False
+                # (e.g., anno_oncoprint_barplot, R oncoPrint.R:821),
+                # respect it over the HeatmapAnnotation default.
+                _af_show_name = getattr(anno_val, 'show_name', None)
+                _eff_show_name = s_show_name if _af_show_name is None else (_af_show_name and s_show_name)
                 sa = SingleAnnotation(
                     name=anno_name,
                     fun=anno_val,
@@ -229,7 +234,7 @@ class HeatmapAnnotation:
                     na_col=na_col,
                     gp=gp,
                     border=border,
-                    show_name=s_show_name,
+                    show_name=_eff_show_name,
                     show_legend=s_show_legend,
                     name_gp=self.annotation_name_gp,
                     name_side=self.annotation_name_side,
@@ -298,6 +303,22 @@ class HeatmapAnnotation:
             if sa.nobs is not None:
                 return sa.nobs
         return None
+
+    @property
+    def extended(self) -> tuple:
+        """Aggregated overflow (top, right, bottom, left) in mm.
+
+        Port of R ``HeatmapAnnotation-class.R:502-508``.  Returns the
+        element-wise maximum of all SingleAnnotation extended values.
+        """
+        top = right = bottom = left = 0.0
+        for sa in self.anno_list.values():
+            ext = getattr(sa, "extended", (0, 0, 0, 0))
+            top = max(top, ext[0])
+            right = max(right, ext[1])
+            bottom = max(bottom, ext[2])
+            left = max(left, ext[3])
+        return (top, right, bottom, left)
 
     @property
     def width(self) -> Optional[Any]:
@@ -406,6 +427,7 @@ class HeatmapAnnotation:
                     y=grid_py.Unit(y_frac, "npc"),
                     height=grid_py.Unit(sz_frac, "npc"),
                     just=["center", "bottom"],
+                    clip=False,
                     name=anno_vp_name,
                 ))
             else:
@@ -416,6 +438,7 @@ class HeatmapAnnotation:
                     x=grid_py.Unit(x_frac, "npc"),
                     width=grid_py.Unit(sz_frac, "npc"),
                     just=["left", "center"],
+                    clip=False,
                     name=anno_vp_name,
                 ))
 

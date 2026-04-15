@@ -52,8 +52,8 @@ _DEFAULTS: Dict[str, Any] = {
     "DENDROGRAM_PADDING": 0.5,
     "DIMNAME_PADDING": 1,
     "TITLE_PADDING": 2.5,
-    "COLUMN_ANNO_PADDING": 0.5,
-    "ROW_ANNO_PADDING": 0.5,
+    "COLUMN_ANNO_PADDING": 1,       # R global.R:186-189
+    "ROW_ANNO_PADDING": 1,          # R global.R:190-193
     "HEATMAP_LEGEND_PADDING": 2,
     "ANNOTATION_LEGEND_PADDING": 2,
     # misc

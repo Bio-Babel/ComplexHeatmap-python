@@ -304,6 +304,53 @@ class SingleAnnotation:
         return self._anno_fun.nobs
 
     @property
+    def extended(self) -> tuple:
+        """Overflow space (top, right, bottom, left) in mm.
+
+        Port of R ``SingleAnnotation-class.R:440-473``.  Computes how
+        much space the annotation name and axis labels need beyond the
+        annotation body.
+        """
+        top = right = bottom = left = 0.0
+        name_offset_mm = 1.0  # R default
+
+        if self.show_name and self.name:
+            # Estimate text dimensions (R: max_text_width/max_text_height)
+            label = self.label if self.label else self.name
+            fontsize = 10
+            if self.name_gp:
+                fontsize = self.name_gp.get("fontsize", 10)
+            # Rough estimate: each char ~2mm wide, line height ~3.5mm
+            lines = label.split("\n")
+            char_w_mm = fontsize * 0.2  # approximate mm per char
+            max_line_w = max(len(ln) for ln in lines) * char_w_mm
+            text_h_mm = len(lines) * fontsize * 0.35
+            text_extent = name_offset_mm  # at minimum, the offset
+
+            if self.which == "column":
+                rot = self.name_rot if self.name_rot is not None else 0
+                if rot in (0, 180, None):
+                    text_extent += max_line_w
+                else:
+                    text_extent += text_h_mm
+                if self.name_side == "left":
+                    left = text_extent
+                else:
+                    right = text_extent
+            else:  # row
+                rot = self.name_rot if self.name_rot is not None else 90
+                if rot in (90, 270):
+                    text_extent += max_line_w
+                else:
+                    text_extent += text_h_mm
+                if self.name_side == "bottom":
+                    bottom = text_extent
+                else:
+                    top = text_extent
+
+        return (top, right, bottom, left)
+
+    @property
     def width(self) -> Optional[Any]:
         """Width of the annotation track."""
         return self._anno_fun.width
@@ -344,9 +391,35 @@ class SingleAnnotation:
         n : int
             Total number of slices.
         """
+        # ---- Data viewport (R SingleAnnotation-class.R:654-666) ----
+        # The annotation function draws in native coordinates; we must
+        # set up the viewport with the correct xscale/yscale so that
+        # native units map correctly.
+        ni = len(index)
+        fun_data_scale = getattr(self._anno_fun, "data_scale", None)
+        _pushed_vp = False
+
+        if fun_data_scale is not None and ni > 0:
+            if self.which == "column":
+                xscale = (0.5, ni + 0.5)
+                yscale = tuple(fun_data_scale)
+            else:  # row
+                xscale = tuple(fun_data_scale)
+                yscale = (0.5, ni + 0.5)
+            grid_py.push_viewport(grid_py.Viewport(
+                xscale=xscale,
+                yscale=yscale,
+                clip=False,
+                name=f"sa_data_{self.name}_{k}",
+            ))
+            _pushed_vp = True
+
         self._anno_fun.draw(index, k=k, n=n)
 
-        # Draw annotation name label (R line 671-712)
+        if _pushed_vp:
+            grid_py.up_viewport()
+
+        # ---- Annotation name label (R line 671-712) ----
         if not self.show_name:
             return
         if not self.name:
@@ -364,10 +437,13 @@ class SingleAnnotation:
         if not draw_name:
             return
 
-        # Compute name position (R SingleAnnotation-class.R:268-340)
-        offset = grid_py.Unit(1, "mm")  # default name_offset
+        # Name offset: R default is unit(1, "mm")
+        offset = grid_py.Unit(1, "mm")
         name_gp = grid_py.Gpar(fontsize=10)
+        if hasattr(self, 'name_gp') and self.name_gp:
+            name_gp = grid_py.Gpar(**self.name_gp) if isinstance(self.name_gp, dict) else self.name_gp
 
+        # Compute name position (R SingleAnnotation-class.R:268-340)
         if self.which == "column":
             if self.name_side == "right":
                 x = grid_py.Unit(1, "npc") + offset
