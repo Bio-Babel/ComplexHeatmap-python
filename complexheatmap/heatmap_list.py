@@ -581,14 +581,22 @@ class HeatmapList:
             # Query the grob's natural size via width_details/height_details
             w_unit = _packed_legend.grob.width_details()
             h_unit = _packed_legend.grob.height_details()
-            # Extract mm value (width_details returns Unit or None)
-            if w_unit is not None:
-                _legend_w_mm = float(w_unit._values[0]) if hasattr(w_unit, '_values') else 20.0
-            if h_unit is not None:
-                _legend_h_mm = float(h_unit._values[0]) if hasattr(h_unit, '_values') else 30.0
-            # Add padding
-            _legend_w_mm += 4.0
-            _legend_h_mm += 4.0
+            # Extract mm value via unit-safe conversion
+            if w_unit is not None and hasattr(w_unit, '_values'):
+                try:
+                    w_mm = grid_py.convert_width(w_unit, "mm", valueOnly=True)
+                    _legend_w_mm = float(w_mm[0]) if hasattr(w_mm, '__getitem__') else float(w_mm)
+                except Exception:
+                    _legend_w_mm = float(w_unit._values[0]) if w_unit._units[0] == "mm" else 20.0
+            if h_unit is not None and hasattr(h_unit, '_values'):
+                try:
+                    h_mm = grid_py.convert_height(h_unit, "mm", valueOnly=True)
+                    _legend_h_mm = float(h_mm[0]) if hasattr(h_mm, '__getitem__') else float(h_mm)
+                except Exception:
+                    _legend_h_mm = float(h_unit._values[0]) if h_unit._units[0] == "mm" else 30.0
+            # Add padding: 2mm content + 2mm HEATMAP_LEGEND_PADDING (R global.R:195)
+            _legend_w_mm += 2.0 + 4.0  # padding + HEATMAP_LEGEND_PADDING*2
+            _legend_h_mm += 2.0 + 4.0
 
         # Rows: optional column_title_top, [legend_top], heatmap_panel, [legend_bottom]
         row_heights_list: List[grid_py.Unit] = []
@@ -969,26 +977,29 @@ class HeatmapList:
         )
         grid_py.push_viewport(vp)
 
-        # Position within the viewport with small padding
-        if side == "right":
-            x = grid_py.Unit(2, "mm")
-            y = grid_py.Unit(1, "npc") - grid_py.Unit(2, "mm")
-            just = ["left", "top"]
-        elif side == "left":
-            x = grid_py.Unit(1, "npc") - grid_py.Unit(2, "mm")
-            y = grid_py.Unit(1, "npc") - grid_py.Unit(2, "mm")
-            just = ["right", "top"]
-        elif side == "top":
-            x = grid_py.Unit(0.5, "npc")
-            y = grid_py.Unit(0.5, "npc")
-            just = "centre"
-        else:  # bottom
-            x = grid_py.Unit(0.5, "npc")
-            y = grid_py.Unit(0.5, "npc")
-            just = "centre"
+        # Position within the legend slot.
+        # R (HeatmapList-legends.R:132-206): default is "global_center" or
+        # "heatmap_center" — legend viewport centered within its slot.
+        # For left/right: x=0.5npc, y=0.5npc, just=center
+        # For top/bottom: x=0.5npc, y=0.5npc, just=center
+        x = grid_py.Unit(0.5, "npc")
+        y = grid_py.Unit(0.5, "npc")
+        just = "centre"
+
+        # Compute legend natural size for the inner viewport
+        _lw = getattr(packed, '_legend_w_mm', None)
+        _lh = getattr(packed, '_legend_h_mm', None)
+        if _lw is None or _lh is None:
+            g = packed.grob if hasattr(packed, 'grob') else packed
+            _w = g.width_details() if hasattr(g, 'width_details') else None
+            _h = g.height_details() if hasattr(g, 'height_details') else None
+            _lw = float(_w._values[0]) if _w is not None and hasattr(_w, '_values') else 20.0
+            _lh = float(_h._values[0]) if _h is not None and hasattr(_h, '_values') else 30.0
 
         legend_vp = grid_py.Viewport(
             x=x, y=y, just=just,
+            width=grid_py.Unit(_lw, "mm"),
+            height=grid_py.Unit(_lh, "mm"),
             name=f"legend_draw_{side}",
         )
         grid_py.push_viewport(legend_vp)

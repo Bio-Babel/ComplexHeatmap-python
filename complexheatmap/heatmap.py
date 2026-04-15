@@ -120,17 +120,11 @@ def _compute_dist(
 def _compute_linkage(
     dist_condensed: np.ndarray,
     method: str = "complete",
-    reorder: bool = True,
 ) -> np.ndarray:
     """Compute hierarchical clustering linkage."""
-    from scipy.cluster.hierarchy import linkage, optimal_leaf_ordering
+    from scipy.cluster.hierarchy import linkage
 
     Z = linkage(dist_condensed, method=method)
-    if reorder:
-        try:
-            Z = optimal_leaf_ordering(Z, dist_condensed)
-        except (np.linalg.LinAlgError, ValueError):
-            pass  # Numerical issues; fall back to unordered linkage
     return Z
 
 
@@ -138,6 +132,62 @@ def _leaves_from_linkage(Z: np.ndarray) -> np.ndarray:
     """Return leaf ordering from a linkage matrix."""
     from scipy.cluster.hierarchy import leaves_list
     return leaves_list(Z)
+
+
+def _reorder_linkage_by_weights(
+    Z: np.ndarray,
+    weights: Optional[np.ndarray],
+) -> np.ndarray:
+    """Reorder a linkage tree to better match R's ``reorder.dendrogram``.
+
+    R's ComplexHeatmap defaults to reordering dendrogram branches by
+    ``-rowMeans`` / ``-colMeans`` rather than SciPy's optimal-leaf-ordering.
+    This function approximates that behavior by recursively swapping the
+    left/right children at each merge based on the mean weight of the
+    descendant leaves.
+    """
+    if weights is None:
+        return Z
+
+    arr = np.asarray(weights, dtype=float)
+    if arr.ndim != 1:
+        return Z
+
+    Z2 = np.asarray(Z, dtype=float).copy()
+    n_leaves = Z2.shape[0] + 1
+    if len(arr) != n_leaves:
+        return Z
+
+    def _visit(node_id: int) -> float:
+        if node_id < n_leaves:
+            val = arr[node_id]
+            return float(val) if not np.isnan(val) else 0.0
+
+        row = node_id - n_leaves
+        left = int(Z2[row, 0])
+        right = int(Z2[row, 1])
+
+        left_mean = _visit(left)
+        right_mean = _visit(right)
+
+        if left_mean > right_mean:
+            Z2[row, 0], Z2[row, 1] = Z2[row, 1], Z2[row, 0]
+            left_mean, right_mean = right_mean, left_mean
+
+        return float(np.nanmean([left_mean, right_mean]))
+
+    _visit(2 * n_leaves - 2)
+    return Z2
+
+
+def _sum_units(units: Sequence[grid_py.Unit]) -> grid_py.Unit:
+    """Return the sum of a sequence of grid units."""
+    if not units:
+        return grid_py.Unit(0, "mm")
+    total = units[0]
+    for unit in units[1:]:
+        total = total + unit
+    return total
 
 
 def _kmeans_split(mat: np.ndarray, k: int, repeats: int = 1) -> np.ndarray:
@@ -655,8 +705,105 @@ class Heatmap(AdditiveUnit):
             return
         self._compute_row_layout()
         self._compute_column_layout()
+        self._compute_slice_layout()
         self._layout_computed = True
         self._layout["initialized"] = True
+
+    def _cluster_slice_order(
+        self,
+        order_list: List[np.ndarray],
+        dend_list: List[Optional[np.ndarray]],
+        levels: Optional[List[Any]],
+        axis: str,
+    ) -> Tuple[List[np.ndarray], List[Optional[np.ndarray]], Optional[List[Any]], Optional[np.ndarray]]:
+        """Cluster slice means and reorder slice groups like R ComplexHeatmap."""
+        if len(order_list) <= 1:
+            return order_list, dend_list, levels, None
+
+        if axis == "row":
+            if not self.cluster_row_slices:
+                return order_list, dend_list, levels, None
+            profiles = np.column_stack([
+                np.nanmean(self.matrix[ind, :], axis=0) for ind in order_list
+            ])
+        else:
+            if not self.cluster_column_slices:
+                return order_list, dend_list, levels, None
+            profiles = np.column_stack([
+                np.nanmean(self.matrix[:, ind], axis=1) for ind in order_list
+            ])
+
+        if profiles.ndim == 1:
+            profiles = profiles.reshape(1, -1)
+        if profiles.shape[1] <= 1:
+            return order_list, dend_list, levels, None
+
+        Z_slice = _compute_linkage(
+            _compute_dist(profiles.T, "euclidean"),
+            method="complete",
+        )
+        Z_slice = _reorder_linkage_by_weights(
+            Z_slice,
+            -np.nanmean(profiles, axis=0),
+        )
+        slice_order = _leaves_from_linkage(Z_slice)
+
+        order_list = [order_list[i] for i in slice_order]
+        dend_list = [dend_list[i] for i in slice_order]
+        if levels is not None:
+            levels = [levels[i] for i in slice_order]
+
+        return order_list, dend_list, levels, Z_slice
+
+    def _compute_slice_layout(self) -> None:
+        """Compute slice positions as unit expressions, matching R layout."""
+        assert self._row_order_list is not None
+        assert self._column_order_list is not None
+
+        n_row_slices = len(self._row_order_list)
+        n_col_slices = len(self._column_order_list)
+
+        row_sizes = np.array([len(idx) for idx in self._row_order_list], dtype=float)
+        col_sizes = np.array([len(idx) for idx in self._column_order_list], dtype=float)
+
+        if row_sizes.sum() == 0:
+            row_sizes = np.ones(max(n_row_slices, 1), dtype=float)
+        if col_sizes.sum() == 0:
+            col_sizes = np.ones(max(n_col_slices, 1), dtype=float)
+
+        if n_row_slices == 1:
+            slice_heights = [grid_py.Unit(1, "npc")]
+        else:
+            available_h = grid_py.Unit(1, "npc") - self.row_gap * (n_row_slices - 1)
+            slice_heights = [
+                available_h * (size / row_sizes.sum()) for size in row_sizes
+            ]
+
+        slice_y = [grid_py.Unit(1, "npc")]
+        for i in range(1, n_row_slices):
+            prior_h = _sum_units(slice_heights[:i])
+            slice_y.append(grid_py.Unit(1, "npc") - prior_h - self.row_gap * i)
+
+        if n_col_slices == 1:
+            slice_widths = [grid_py.Unit(1, "npc")]
+        else:
+            available_w = grid_py.Unit(1, "npc") - self.column_gap * (n_col_slices - 1)
+            slice_widths = [
+                available_w * (size / col_sizes.sum()) for size in col_sizes
+            ]
+
+        slice_x = [grid_py.Unit(0, "npc")]
+        for i in range(1, n_col_slices):
+            prior_w = _sum_units(slice_widths[:i])
+            slice_x.append(prior_w + self.column_gap * i)
+
+        self._layout["slice"] = {
+            "x": slice_x,
+            "y": slice_y,
+            "width": slice_widths,
+            "height": slice_heights,
+            "just": ["left", "top"],
+        }
 
     # --- Row layout ---------------------------------------------------
 
@@ -700,8 +847,16 @@ class Heatmap(AdditiveUnit):
                 else:
                     row_order_list.append(idx_group)
                     row_dend_list.append(None)
+            row_order_list, row_dend_list, levels, row_dend_slice = self._cluster_slice_order(
+                row_order_list,
+                row_dend_list,
+                list(levels),
+                axis="row",
+            )
             self._row_order_list = row_order_list
             self._row_dend_list = row_dend_list
+            self._row_split_labels = levels
+            self._row_dend_slice = row_dend_slice
             return
 
         # Standard path: factor-based split or k-means
@@ -741,8 +896,18 @@ class Heatmap(AdditiveUnit):
                 row_order_list_std.append(idx_group)
                 row_dend_list_std.append(None)
 
+        row_levels = list(levels) if self._row_split_labels is not None else None
+        row_order_list_std, row_dend_list_std, row_levels, row_dend_slice = self._cluster_slice_order(
+            row_order_list_std,
+            row_dend_list_std,
+            row_levels,
+            axis="row",
+        )
+
         self._row_order_list = row_order_list_std
         self._row_dend_list = row_dend_list_std
+        self._row_dend_slice = row_dend_slice
+        self._row_split_labels = row_levels
 
     def _should_cluster_rows(self) -> bool:
         if not self._is_numeric_matrix:
@@ -762,11 +927,26 @@ class Heatmap(AdditiveUnit):
             return np.asarray(cr(sub_mat))
 
         dist = _compute_dist(sub_mat, self.clustering_distance_rows)
-        return _compute_linkage(
-            dist,
-            method=self.clustering_method_rows,
-            reorder=self.row_dend_reorder,
-        )
+        Z = _compute_linkage(dist, method=self.clustering_method_rows)
+
+        reorder = self.row_dend_reorder
+        weights: Optional[np.ndarray] = None
+        if isinstance(reorder, np.ndarray):
+            if reorder.ndim == 1 and len(reorder) == sub_mat.shape[0]:
+                weights = np.asarray(reorder, dtype=float)
+        elif isinstance(reorder, (list, tuple)):
+            arr = np.asarray(reorder, dtype=float)
+            if arr.ndim == 1 and len(arr) == sub_mat.shape[0]:
+                weights = arr
+        elif reorder:
+            try:
+                from scipy.cluster.hierarchy import optimal_leaf_ordering
+
+                return optimal_leaf_ordering(Z, dist)
+            except (np.linalg.LinAlgError, ValueError):
+                return Z
+
+        return _reorder_linkage_by_weights(Z, weights)
 
     # --- Column layout ------------------------------------------------
 
@@ -809,8 +989,16 @@ class Heatmap(AdditiveUnit):
                 else:
                     column_order_list.append(idx_group)
                     column_dend_list.append(None)
+            column_order_list, column_dend_list, levels, column_dend_slice = self._cluster_slice_order(
+                column_order_list,
+                column_dend_list,
+                list(levels),
+                axis="column",
+            )
             self._column_order_list = column_order_list
             self._column_dend_list = column_dend_list
+            self._column_split_labels = levels
+            self._column_dend_slice = column_dend_slice
             return
 
         col_factor_std: Optional[np.ndarray] = None
@@ -849,8 +1037,18 @@ class Heatmap(AdditiveUnit):
                 column_order_list_std.append(idx_group)
                 column_dend_list_std.append(None)
 
+        col_levels = list(levels) if self._column_split_labels is not None else None
+        column_order_list_std, column_dend_list_std, col_levels, column_dend_slice = self._cluster_slice_order(
+            column_order_list_std,
+            column_dend_list_std,
+            col_levels,
+            axis="column",
+        )
+
         self._column_order_list = column_order_list_std
         self._column_dend_list = column_dend_list_std
+        self._column_dend_slice = column_dend_slice
+        self._column_split_labels = col_levels
 
     def _should_cluster_columns(self) -> bool:
         if not self._is_numeric_matrix:
@@ -870,11 +1068,26 @@ class Heatmap(AdditiveUnit):
             return np.asarray(cc(sub_mat.T))
 
         dist = _compute_dist(sub_mat.T, self.clustering_distance_columns)
-        return _compute_linkage(
-            dist,
-            method=self.clustering_method_columns,
-            reorder=self.column_dend_reorder,
-        )
+        Z = _compute_linkage(dist, method=self.clustering_method_columns)
+
+        reorder = self.column_dend_reorder
+        weights: Optional[np.ndarray] = None
+        if isinstance(reorder, np.ndarray):
+            if reorder.ndim == 1 and len(reorder) == sub_mat.shape[1]:
+                weights = np.asarray(reorder, dtype=float)
+        elif isinstance(reorder, (list, tuple)):
+            arr = np.asarray(reorder, dtype=float)
+            if arr.ndim == 1 and len(arr) == sub_mat.shape[1]:
+                weights = arr
+        elif reorder:
+            try:
+                from scipy.cluster.hierarchy import optimal_leaf_ordering
+
+                return optimal_leaf_ordering(Z, dist)
+            except (np.linalg.LinAlgError, ValueError):
+                return Z
+
+        return _reorder_linkage_by_weights(Z, weights)
 
     # ------------------------------------------------------------------
     # Accessors for layout results
@@ -931,30 +1144,52 @@ class Heatmap(AdditiveUnit):
     # Component sizes
     # ------------------------------------------------------------------
 
-    def _max_text_width_mm(self, labels: list, fallback: float = 10.0) -> float:
-        """Measure the maximum text width in mm across *labels* using Cairo metrics.
+    def _max_text_width_mm(self, labels: list, rot: float = 0,
+                            gp: Any = None, fallback: float = 10.0) -> float:
+        """Measure the maximum text width in mm across *labels*.
 
-        Mirrors R's ``max_text_width(labels)`` used for sizing name viewports.
+        Port of R's ``max_text_width(text, gp, rot)`` (utils.R:393-402):
+        ``max(grobWidth(textGrob(text[i], gp=gp, rot=rot)))`` converted to mm.
+
+        Uses grid_py's ``widthDetails(textGrob(rot=rot))`` which computes
+        the rotated bounding box — matching R's ``C_textBounds``.
         """
         if not labels:
             return fallback
         try:
+            from grid_py._primitives import text_grob
+            from grid_py._size import width_details
             max_w = 0.0
             for lbl in labels:
-                u = grid_py.Unit(1, "strwidth", data=str(lbl))
-                w = grid_py.convert_width(u, "mm")
-                val = float(w._values[0]) if hasattr(w, '_values') else float(w)
+                g = text_grob(label=str(lbl), x=0.5, y=0.5, rot=rot, gp=gp)
+                w_unit = width_details(g)
+                w_mm = grid_py.convert_width(w_unit, "mm", valueOnly=True)
+                val = float(w_mm[0]) if hasattr(w_mm, '__getitem__') else float(w_mm)
                 max_w = max(max_w, val)
-            return max_w + 2.0  # 2mm padding
+            return max_w
         except (TypeError, ValueError, AttributeError, RuntimeError):
             return fallback
 
-    def _text_height_mm(self, fallback: float = 5.0) -> float:
-        """Measure text line height in mm using Cairo metrics."""
+    def _max_text_height_mm(self, labels: list, rot: float = 0,
+                             gp: Any = None, fallback: float = 5.0) -> float:
+        """Measure the maximum text height in mm across *labels*.
+
+        Port of R's ``max_text_height(text, gp, rot)`` (utils.R:430+):
+        ``max(grobHeight(textGrob(text[i], gp=gp, rot=rot)))`` converted to mm.
+        """
+        if not labels:
+            return fallback
         try:
-            u = grid_py.Unit(1, "strheight", data="Xg")
-            h = grid_py.convert_height(u, "mm")
-            return float(h._values[0]) if hasattr(h, '_values') else float(h)
+            from grid_py._primitives import text_grob
+            from grid_py._size import height_details
+            max_h = 0.0
+            for lbl in labels:
+                g = text_grob(label=str(lbl), x=0.5, y=0.5, rot=rot, gp=gp)
+                h_unit = height_details(g)
+                h_mm = grid_py.convert_height(h_unit, "mm", valueOnly=True)
+                val = float(h_mm[0]) if hasattr(h_mm, '__getitem__') else float(h_mm)
+                max_h = max(max_h, val)
+            return max_h
         except (TypeError, ValueError, AttributeError, RuntimeError):
             return fallback
 
@@ -987,27 +1222,43 @@ class Heatmap(AdditiveUnit):
             if self.show_column_dend and self.column_dend_side == "bottom" and self._should_cluster_columns():
                 return self.column_dend_height
             return zero
-        if component == "column_names_top":
-            if self.show_column_names and self.column_names_side == "top":
+        if component in ("column_names_top", "column_names_bottom"):
+            side = "top" if component == "column_names_top" else "bottom"
+            if self.show_column_names and self.column_names_side == side:
                 labels = self.column_labels if self.column_labels is not None else [str(i) for i in range(self.matrix.shape[1])]
-                if self.column_names_rot != 0:
-                    return grid_py.Unit(self._max_text_width_mm(labels), "mm")
-                return grid_py.Unit(self._text_height_mm() + 2, "mm")
-            return zero
-        if component == "column_names_bottom":
-            if self.show_column_names and self.column_names_side == "bottom":
-                labels = self.column_labels if self.column_labels is not None else [str(i) for i in range(self.matrix.shape[1])]
-                if self.column_names_rot != 0:
-                    return grid_py.Unit(self._max_text_width_mm(labels), "mm")
-                return grid_py.Unit(self._text_height_mm() + 2, "mm")
+                gp = getattr(self, 'column_names_gp', None)
+                rot = self.column_names_rot
+                # R anno_text (AnnotationFunction-function.R:2432-2434):
+                # height = max_text_width(x, gp) * |sin(rot)| + grobHeight("A", gp) * |cos(rot)|
+                import math
+                sin_r = abs(math.sin(math.radians(rot)))
+                cos_r = abs(math.cos(math.radians(rot)))
+                text_w = self._max_text_width_mm(labels, rot=0, gp=gp)
+                text_h = self._max_text_height_mm(["A"], rot=0, gp=gp)
+                h = text_w * sin_r + text_h * cos_r
+                padding = 1.0  # DIMNAME_PADDING (R default = 1mm)
+                return grid_py.Unit(h + padding * 2, "mm")
             return zero
         if component == "top_annotation":
             if self.top_annotation is not None:
-                return grid_py.Unit(15, "mm")
+                h = self.top_annotation.height
+                if h is not None and isinstance(h, (int, float)):
+                    return grid_py.Unit(float(h), "mm")
+                if h is not None and hasattr(h, '_values'):
+                    return h
+                # Fallback: n_tracks * 7mm + gaps
+                n = len(self.top_annotation.anno_list) if hasattr(self.top_annotation, 'anno_list') else 1
+                return grid_py.Unit(max(n * 7, 15), "mm")
             return zero
         if component == "bottom_annotation":
             if self.bottom_annotation is not None:
-                return grid_py.Unit(15, "mm")
+                h = self.bottom_annotation.height
+                if h is not None and isinstance(h, (int, float)):
+                    return grid_py.Unit(float(h), "mm")
+                if h is not None and hasattr(h, '_values'):
+                    return h
+                n = len(self.bottom_annotation.anno_list) if hasattr(self.bottom_annotation, 'anno_list') else 1
+                return grid_py.Unit(max(n * 7, 15), "mm")
             return zero
         if component == "heatmap_body":
             return grid_py.Unit(1, "null")
@@ -1032,27 +1283,42 @@ class Heatmap(AdditiveUnit):
             if self.show_row_dend and self.row_dend_side == "right" and self._should_cluster_rows():
                 return self.row_dend_width
             return zero
-        if component == "row_names_left":
-            if self.show_row_names and self.row_names_side == "left":
+        if component in ("row_names_left", "row_names_right"):
+            side = "left" if component == "row_names_left" else "right"
+            if self.show_row_names and self.row_names_side == side:
                 labels = self.row_labels if self.row_labels is not None else [str(i) for i in range(self.matrix.shape[0])]
-                if self.row_names_rot != 0:
-                    return grid_py.Unit(self._text_height_mm() + 2, "mm")
-                return grid_py.Unit(self._max_text_width_mm(labels), "mm")
-            return zero
-        if component == "row_names_right":
-            if self.show_row_names and self.row_names_side == "right":
-                labels = self.row_labels if self.row_labels is not None else [str(i) for i in range(self.matrix.shape[0])]
-                if self.row_names_rot != 0:
-                    return grid_py.Unit(self._text_height_mm() + 2, "mm")
-                return grid_py.Unit(self._max_text_width_mm(labels), "mm")
+                gp = getattr(self, 'row_names_gp', None)
+                rot = self.row_names_rot
+                # R anno_text (AnnotationFunction-function.R:2441-2443):
+                # width = max_text_width(x, gp) * |cos(rot)| + grobHeight("A", gp) * |sin(rot)|
+                import math
+                sin_r = abs(math.sin(math.radians(rot)))
+                cos_r = abs(math.cos(math.radians(rot)))
+                text_w = self._max_text_width_mm(labels, rot=0, gp=gp)
+                text_h = self._max_text_height_mm(["A"], rot=0, gp=gp)
+                w = text_w * cos_r + text_h * sin_r
+                padding = 1.0  # DIMNAME_PADDING
+                return grid_py.Unit(w + padding * 2, "mm")
             return zero
         if component == "left_annotation":
             if self.left_annotation is not None:
-                return grid_py.Unit(15, "mm")
+                w = self.left_annotation.width
+                if w is not None and isinstance(w, (int, float)):
+                    return grid_py.Unit(float(w), "mm")
+                if w is not None and hasattr(w, '_values'):
+                    return w
+                n = len(self.left_annotation.anno_list) if hasattr(self.left_annotation, 'anno_list') else 1
+                return grid_py.Unit(max(n * 7, 15), "mm")
             return zero
         if component == "right_annotation":
             if self.right_annotation is not None:
-                return grid_py.Unit(15, "mm")
+                w = self.right_annotation.width
+                if w is not None and isinstance(w, (int, float)):
+                    return grid_py.Unit(float(w), "mm")
+                if w is not None and hasattr(w, '_values'):
+                    return w
+                n = len(self.right_annotation.anno_list) if hasattr(self.right_annotation, 'anno_list') else 1
+                return grid_py.Unit(max(n * 7, 15), "mm")
             return zero
         if component == "heatmap_body":
             return grid_py.Unit(1, "null")
@@ -1201,6 +1467,55 @@ class Heatmap(AdditiveUnit):
     # Heatmap body drawing
     # ------------------------------------------------------------------
 
+    def _prepare_raster_image(self, col_matrix: np.ndarray) -> Any:
+        """Convert a color matrix into a raster image for ``grid_raster``."""
+        image: Any = np.asarray(col_matrix, dtype=object)
+        renderer = grid_py.get_state().get_renderer()
+        if renderer is None:
+            return image
+
+        quality = max(float(self.raster_quality), 1.0)
+        target_w = max(
+            1,
+            int(round(
+                float(grid_py.convert_width(
+                    grid_py.Unit(1, "npc"),
+                    "inches",
+                    valueOnly=True,
+                )[0]) * renderer.dpi * quality
+            )),
+        )
+        target_h = max(
+            1,
+            int(round(
+                float(grid_py.convert_height(
+                    grid_py.Unit(1, "npc"),
+                    "inches",
+                    valueOnly=True,
+                )[0]) * renderer.dpi * quality
+            )),
+        )
+
+        if image.shape[1] == target_w and image.shape[0] == target_h:
+            return image
+
+        try:
+            from PIL import Image, ImageColor
+
+            rgba = np.zeros((image.shape[0], image.shape[1], 4), dtype=np.uint8)
+            for r in range(image.shape[0]):
+                for c in range(image.shape[1]):
+                    rgba[r, c] = ImageColor.getcolor(str(image[r, c]), "RGBA")
+
+            pil_image = Image.fromarray(rgba, mode="RGBA")
+            resized = pil_image.resize(
+                (target_w, target_h),
+                resample=Image.Resampling.NEAREST,
+            )
+            return np.asarray(resized)
+        except Exception:
+            return image
+
     def _draw_heatmap_body(
         self, body_row: int, body_col: int,
         n_row_slices: int, n_col_slices: int,
@@ -1215,11 +1530,11 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(body_vp)
 
-        # Compute slice proportions for sub-layout
-        row_sizes = [len(self._row_order_list[i]) for i in range(n_row_slices)]
-        col_sizes = [len(self._column_order_list[i]) for i in range(n_col_slices)]
-        total_rows = sum(row_sizes)
-        total_cols = sum(col_sizes)
+        slice_layout = self._layout["slice"]
+        slice_x = slice_layout["x"]
+        slice_y = slice_layout["y"]
+        slice_width = slice_layout["width"]
+        slice_height = slice_layout["height"]
 
         for ri in range(n_row_slices):
             for ci in range(n_col_slices):
@@ -1232,20 +1547,12 @@ class Heatmap(AdditiveUnit):
                 if nr == 0 or nc == 0:
                     continue
 
-                # Compute position of this slice within the body
-                # y goes top-to-bottom, x goes left-to-right
-                x_start = sum(col_sizes[:ci]) / total_cols if total_cols > 0 else 0
-                x_width = col_sizes[ci] / total_cols if total_cols > 0 else 1
-                y_start_from_top = sum(row_sizes[:ri]) / total_rows if total_rows > 0 else 0
-                y_height = row_sizes[ri] / total_rows if total_rows > 0 else 1
-
-                # Add gap offsets (approximate for now)
                 slice_vp = grid_py.Viewport(
-                    x=grid_py.Unit(x_start, "npc"),
-                    y=grid_py.Unit(1.0 - y_start_from_top - y_height, "npc"),
-                    width=grid_py.Unit(x_width, "npc"),
-                    height=grid_py.Unit(y_height, "npc"),
-                    just=["left", "bottom"],
+                    x=slice_x[ci],
+                    y=slice_y[ri],
+                    width=slice_width[ci],
+                    height=slice_height[ri],
+                    just=["left", "top"],
                     name=f"{self.name}_heatmap_body_{ri + 1}_{ci + 1}",
                 )
                 grid_py.push_viewport(slice_vp)
@@ -1257,36 +1564,61 @@ class Heatmap(AdditiveUnit):
                 x_positions = [(j + 0.5) / nc for j in range(nc)]
                 y_positions = [1.0 - (i + 0.5) / nr for i in range(nr)]
 
-                # Vectorised: draw all cells as a single grid_rect call
-                all_x = []
-                all_y = []
-                all_fill = []
-                for i_r in range(nr):
-                    for j_c in range(nc):
-                        all_x.append(x_positions[j_c])
-                        all_y.append(y_positions[i_r])
-                        all_fill.append(col_matrix[i_r, j_c])
-
-                gp_kwargs = {}
-                if hasattr(self.rect_gp, 'params'):
+                gp_kwargs: Dict[str, Any] = {}
+                if hasattr(self.rect_gp, "params"):
                     gp_kwargs = dict(self.rect_gp.params)
-                gp_kwargs['fill'] = all_fill
 
-                grid_py.grid_rect(
-                    x=all_x,
-                    y=all_y,
-                    width=cell_width,
-                    height=cell_height,
-                    default_units="npc",
-                    just="centre",
-                    gp=grid_py.Gpar(**gp_kwargs),
-                    name=f"{self.name}_body_rect_{ri}_{ci}",
-                )
+                use_raster = bool(self.use_raster and self.cell_fun is None)
+                if gp_kwargs.get("type") == "none":
+                    use_raster = False
+
+                if use_raster:
+                    image = self._prepare_raster_image(col_matrix)
+                    grid_py.grid_raster(
+                        image=image,
+                        x=0.5,
+                        y=0.5,
+                        width=1.0,
+                        height=1.0,
+                        default_units="npc",
+                        interpolate=False,
+                        name=f"{self.name}_body_raster_{ri}_{ci}",
+                    )
+                elif gp_kwargs.get("type") != "none":
+                    all_x = []
+                    all_y = []
+                    all_fill = []
+                    for i_r in range(nr):
+                        for j_c in range(nc):
+                            all_x.append(x_positions[j_c])
+                            all_y.append(y_positions[i_r])
+                            all_fill.append(col_matrix[i_r, j_c])
+
+                    gp_kwargs["fill"] = all_fill
+
+                    grid_py.grid_rect(
+                        x=all_x,
+                        y=all_y,
+                        width=cell_width,
+                        height=cell_height,
+                        default_units="npc",
+                        just="centre",
+                        gp=grid_py.Gpar(**gp_kwargs),
+                        name=f"{self.name}_body_rect_{ri}_{ci}",
+                    )
 
                 # Border around the whole slice
                 if self.border is not None:
+                    border_gp = (
+                        grid_py.Gpar(**dict(self.border_gp.params))
+                        if hasattr(self.border_gp, "params")
+                        else grid_py.Gpar(col="black")
+                    )
+                    border_gp.fill = "transparent"
+                    if self.border is not True:
+                        border_gp.col = self.border
                     grid_py.grid_rect(
-                        gp=grid_py.Gpar(col=self.border, fill="transparent"),
+                        gp=border_gp,
                         name=f"{self.name}_body_border_{ri}_{ci}",
                     )
 
@@ -1416,22 +1748,19 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(vp)
 
-        n_col_slices = len(self._column_order_list)
-        col_sizes = [len(self._column_order_list[i]) for i in range(n_col_slices)]
-        total_cols = sum(col_sizes)
+        slice_layout = self._layout["slice"]
+        slice_x = slice_layout["x"]
+        slice_width = slice_layout["width"]
 
-        for ci in range(n_col_slices):
+        for ci in range(len(self._column_order_list)):
             Z = self._column_dend_list[ci]
             if Z is None:
                 continue
 
-            x_start = sum(col_sizes[:ci]) / total_cols if total_cols > 0 else 0
-            x_width = col_sizes[ci] / total_cols if total_cols > 0 else 1
-
             slice_vp = grid_py.Viewport(
-                x=grid_py.Unit(x_start, "npc"),
+                x=slice_x[ci],
                 y=grid_py.Unit(0, "npc"),
-                width=grid_py.Unit(x_width, "npc"),
+                width=slice_width[ci],
                 height=grid_py.Unit(1, "npc"),
                 just=["left", "bottom"],
                 name=f"{self.name}_column_dend_{ci + 1}",
@@ -1479,24 +1808,21 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(vp)
 
-        n_row_slices = len(self._row_order_list)
-        row_sizes = [len(self._row_order_list[i]) for i in range(n_row_slices)]
-        total_rows = sum(row_sizes)
+        slice_layout = self._layout["slice"]
+        slice_y = slice_layout["y"]
+        slice_height = slice_layout["height"]
 
-        for ri in range(n_row_slices):
+        for ri in range(len(self._row_order_list)):
             Z = self._row_dend_list[ri]
             if Z is None:
                 continue
 
-            y_start_from_top = sum(row_sizes[:ri]) / total_rows if total_rows > 0 else 0
-            y_height = row_sizes[ri] / total_rows if total_rows > 0 else 1
-
             slice_vp = grid_py.Viewport(
                 x=grid_py.Unit(0, "npc"),
-                y=grid_py.Unit(1.0 - y_start_from_top - y_height, "npc"),
+                y=slice_y[ri],
                 width=grid_py.Unit(1, "npc"),
-                height=grid_py.Unit(y_height, "npc"),
-                just=["left", "bottom"],
+                height=slice_height[ri],
+                just=["left", "top"],
                 name=f"{self.name}_row_dend_{ri + 1}",
             )
             grid_py.push_viewport(slice_vp)
@@ -1523,6 +1849,16 @@ class Heatmap(AdditiveUnit):
         row_components: List[str],
         col_components: List[str],
     ) -> None:
+        """Draw column names.
+
+        Port of R ``draw_dimnames(which="column")``
+        (Heatmap-draw_component.R:463-472) + ``anno_text.column_fun``
+        (AnnotationFunction-function.R:2473-2486).
+
+        R positioning logic:
+          bottom: y = unit(1, "npc"), just = "right" (text hangs from top)
+          top:    y = unit(0, "npc"), just = "left"  (text rises from bottom)
+        """
         if not self.show_column_names:
             return
 
@@ -1540,23 +1876,44 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(vp)
 
-        n_col_slices = len(self._column_order_list)
-        col_sizes = [len(self._column_order_list[i]) for i in range(n_col_slices)]
-        total_cols = sum(col_sizes)
+        slice_layout = self._layout["slice"]
+        slice_x = slice_layout["x"]
+        slice_width = slice_layout["width"]
 
-        for ci in range(n_col_slices):
+        rot = self.column_names_rot
+
+        # R anno_text location/just logic (AnnotationFunction-function.R:2394-2428)
+        if self.column_names_side == "bottom":
+            # R: location = unit(1, "npc"), just inferred from rot
+            y_pos = grid_py.Unit(1, "npc") - grid_py.Unit(1, "mm")  # DIMNAME_PADDING
+            if self.column_names_centered:
+                just = "centre"
+            elif rot >= 0 and rot < 180:
+                just = "right"
+            else:
+                just = "left"
+        else:  # top
+            y_pos = grid_py.Unit(0, "npc") + grid_py.Unit(1, "mm")
+            if self.column_names_centered:
+                just = "centre"
+            elif rot >= 0 and rot < 180:
+                just = "left"
+            else:
+                just = "right"
+
+        if rot == 0:
+            just = "centre"
+
+        for ci in range(len(self._column_order_list)):
             col_ord = self._column_order_list[ci]
             nc = len(col_ord)
             if nc == 0:
                 continue
 
-            x_start = sum(col_sizes[:ci]) / total_cols if total_cols > 0 else 0
-            x_width = col_sizes[ci] / total_cols if total_cols > 0 else 1
-
             slice_vp = grid_py.Viewport(
-                x=grid_py.Unit(x_start, "npc"),
+                x=slice_x[ci],
                 y=grid_py.Unit(0, "npc"),
-                width=grid_py.Unit(x_width, "npc"),
+                width=slice_width[ci],
                 height=grid_py.Unit(1, "npc"),
                 just=["left", "bottom"],
                 name=f"{self.name}_column_names_{ci + 1}",
@@ -1569,19 +1926,15 @@ class Heatmap(AdditiveUnit):
                 else [str(c) for c in col_ord]
             )
 
+            # R: grid.text(labels, x=(i-0.5)/n, y=location, just=just, rot=rot)
             x_positions = [(j + 0.5) / nc for j in range(nc)]
-            y_pos = 0.9 if self.column_names_side == "top" else 0.1
-
-            just = "centre" if self.column_names_centered else "right"
-            if self.column_names_rot == 0:
-                just = "centre"
 
             grid_py.grid_text(
                 label=labels,
                 x=x_positions,
                 y=y_pos,
                 default_units="npc",
-                rot=self.column_names_rot,
+                rot=rot,
                 just=just,
                 gp=self.column_names_gp,
                 name=f"{self.name}_col_names_text_{ci}",
@@ -1600,6 +1953,16 @@ class Heatmap(AdditiveUnit):
         row_components: List[str],
         col_components: List[str],
     ) -> None:
+        """Draw row names.
+
+        Port of R ``draw_dimnames(which="row")``
+        (Heatmap-draw_component.R:453-462) + ``anno_text.row_fun``
+        (AnnotationFunction-function.R:2454-2466).
+
+        R positioning logic:
+          right: x = unit(0, "npc") + padding, just = "left"
+          left:  x = unit(1, "npc") - padding, just = "right"
+        """
         if not self.show_row_names:
             return
 
@@ -1617,25 +1980,36 @@ class Heatmap(AdditiveUnit):
         )
         grid_py.push_viewport(vp)
 
-        n_row_slices = len(self._row_order_list)
-        row_sizes = [len(self._row_order_list[i]) for i in range(n_row_slices)]
-        total_rows = sum(row_sizes)
+        slice_layout = self._layout["slice"]
+        slice_y = slice_layout["y"]
+        slice_height = slice_layout["height"]
 
-        for ri in range(n_row_slices):
+        rot = self.row_names_rot
+
+        # R draw_dimnames (Heatmap-draw_component.R:453-462)
+        if self.row_names_side == "right":
+            x_pos = grid_py.Unit(0, "npc") + grid_py.Unit(1, "mm")  # DIMNAME_PADDING
+            just = "left"
+        else:  # left
+            x_pos = grid_py.Unit(1, "npc") - grid_py.Unit(1, "mm")
+            just = "right"
+
+        if self.row_names_centered:
+            just = "centre"
+            x_pos = grid_py.Unit(0.5, "npc")
+
+        for ri in range(len(self._row_order_list)):
             row_ord = self._row_order_list[ri]
             nr = len(row_ord)
             if nr == 0:
                 continue
 
-            y_start_from_top = sum(row_sizes[:ri]) / total_rows if total_rows > 0 else 0
-            y_height = row_sizes[ri] / total_rows if total_rows > 0 else 1
-
             slice_vp = grid_py.Viewport(
                 x=grid_py.Unit(0, "npc"),
-                y=grid_py.Unit(1.0 - y_start_from_top - y_height, "npc"),
+                y=slice_y[ri],
                 width=grid_py.Unit(1, "npc"),
-                height=grid_py.Unit(y_height, "npc"),
-                just=["left", "bottom"],
+                height=slice_height[ri],
+                just=["left", "top"],
                 name=f"{self.name}_row_names_{ri + 1}",
             )
             grid_py.push_viewport(slice_vp)
@@ -1646,19 +2020,15 @@ class Heatmap(AdditiveUnit):
                 else [str(r) for r in row_ord]
             )
 
+            # R: grid.text(labels, x=location, y=(n-i+0.5)/n, just=just, rot=rot)
             y_positions = [1.0 - (i + 0.5) / nr for i in range(nr)]
-            x_pos = 0.1 if self.row_names_side == "left" else 0.1
-
-            just = "left" if self.row_names_side == "right" else "right"
-            if self.row_names_centered:
-                just = "centre"
 
             grid_py.grid_text(
                 label=labels,
                 x=x_pos,
                 y=y_positions,
                 default_units="npc",
-                rot=self.row_names_rot,
+                rot=rot,
                 just=just,
                 gp=self.row_names_gp,
                 name=f"{self.name}_row_names_text_{ri}",

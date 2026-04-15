@@ -164,26 +164,60 @@ def _color_mapping_to_list(
     """
     colors: List[str] = []
 
+    def _rgba_to_hex(c: Any) -> str:
+        """Convert an RGBA tuple/list or string to a hex colour string."""
+        if isinstance(c, str):
+            return c
+        if isinstance(c, (tuple, list)) and len(c) >= 3:
+            r, g, b = int(c[0] * 255), int(c[1] * 255), int(c[2] * 255)
+            if len(c) >= 4:
+                a = int(c[3] * 255)
+                return f"#{r:02x}{g:02x}{b:02x}{a:02x}"
+            return f"#{r:02x}{g:02x}{b:02x}"
+        return str(c)
+
+    # col_fn: optional callable for continuous data without explicit col
+    col_fn: Any = None
+
     if col is None:
         unique_vals = np.unique(x[~_isnan_safe(x)])
         if len(unique_vals) <= 20:
             import matplotlib.pyplot as plt
             cmap = plt.cm.get_cmap("tab20", max(len(unique_vals), 1))
-            col_map: Optional[Dict] = {v: cmap(i) for i, v in enumerate(unique_vals)}
+            # Convert matplotlib RGBA tuples to hex strings
+            col_map: Optional[Dict] = {
+                v: _rgba_to_hex(cmap(i)) for i, v in enumerate(unique_vals)
+            }
         else:
+            # Continuous data: auto-generate a colour ramp
+            import matplotlib.pyplot as plt
+            vmin, vmax = float(unique_vals.min()), float(unique_vals.max())
+            cmap_cont = plt.cm.get_cmap("RdYlBu_r")
             col_map = None
+
+            def _auto_col(v: float) -> str:
+                if vmax == vmin:
+                    return _rgba_to_hex(cmap_cont(0.5))
+                frac = (float(v) - vmin) / (vmax - vmin)
+                return _rgba_to_hex(cmap_cont(frac))
+            col_fn = _auto_col
     elif callable(col) and not isinstance(col, dict):
+        col_fn = col
         col_map = None
     else:
-        col_map = col  # type: ignore[assignment]
+        # User-supplied dict: ensure values are hex strings
+        if isinstance(col, dict):
+            col_map = {k: _rgba_to_hex(v) for k, v in col.items()}
+        else:
+            col_map = col  # type: ignore[assignment]
 
     for v in x:
         if _isnan_scalar(v):
             colors.append(na_col)
         elif col_map is not None:
             colors.append(col_map.get(v, na_col))  # type: ignore[union-attr]
-        elif callable(col):
-            colors.append(col(v))
+        elif col_fn is not None:
+            colors.append(_rgba_to_hex(col_fn(v)))
         else:
             colors.append(na_col)
     return colors
