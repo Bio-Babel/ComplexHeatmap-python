@@ -111,12 +111,27 @@ def _expand_data_lim(
     extend: float = 0.05,
     baseline: float = 0.0,
 ) -> Tuple[float, float]:
-    """Compute data-axis limits with optional extension."""
+    """Compute data-axis limits with optional extension.
+
+    Mirrors R ``AnnotationFunction-function.R:1329-1348``.
+    """
     if ylim is not None:
         return tuple(ylim)  # type: ignore[return-value]
-    lo = min(float(np.nanmin(data)), baseline)
-    hi = max(float(np.nanmax(data)), baseline)
-    rng = hi - lo if hi != lo else 1.0
+    lo = float(np.nanmin(data))
+    hi = float(np.nanmax(data))
+    if lo == hi:
+        hi = lo + 1.0
+    # R baseline handling (lines 1339-1348)
+    if isinstance(baseline, (int, float)):
+        if baseline <= lo:
+            # baseline at or below data range
+            return (float(baseline), hi + extend * (hi - float(baseline)))
+        elif baseline >= hi:
+            return (lo - extend * (float(baseline) - lo), float(baseline))
+        else:
+            rng = hi - lo
+            return (lo - extend * rng, hi + extend * rng)
+    rng = hi - lo
     return (lo - extend * rng, hi + extend * rng)
 
 
@@ -494,7 +509,13 @@ def anno_barplot(
     is_matrix = x_arr.ndim == 2
     n = x_arr.shape[0]
 
-    data_lim = _expand_data_lim(x_arr, ylim, extend, baseline)
+    # R AnnotationFunction-function.R:1323-1327:
+    # For stacked bars (matrix, not beside), data range uses rowSums.
+    if is_matrix and not beside:
+        _lim_data = np.nansum(x_arr, axis=1, keepdims=True)
+    else:
+        _lim_data = x_arr
+    data_lim = _expand_data_lim(_lim_data, ylim, extend, baseline)
     merged_gp = _resolve_gp(gp)
     w, h = _default_width_height(which, width, height)
 
@@ -526,13 +547,22 @@ def anno_barplot(
 
         if _is_matrix and not _beside:
             n_cols = subset.shape[1]
-            import matplotlib.pyplot as plt
-            cmap = plt.cm.get_cmap("tab10", n_cols)
+            # Per-column fill colours: R uses gp$fill recycled over columns
+            if isinstance(fill_color, (list, tuple, np.ndarray)) and len(fill_color) >= n_cols:
+                col_fills = list(fill_color)[:n_cols]
+            else:
+                # Fallback to matplotlib colormap
+                try:
+                    import matplotlib.pyplot as plt
+                    cmap = plt.cm.get_cmap("tab10", n_cols)
+                    col_fills = [cmap(j) for j in range(n_cols)]
+                except ImportError:
+                    col_fills = ["steelblue"] * n_cols
             for i in range(ni):
                 bottom = _baseline
                 for j in range(n_cols):
                     val = subset[i, j]
-                    fc = cmap(j)
+                    fc = col_fills[j % len(col_fills)]
                     if _is_row(_which):
                         grid_py.grid_rect(
                             x=grid_py.Unit(bottom, "native"),
@@ -2730,116 +2760,143 @@ def anno_oncoprint_barplot(
     which: str = "column",
     border: bool = False,
     bar_width: float = 0.6,
+    beside: bool = False,
     ylim: Optional[Tuple[float, float]] = None,
+    show_fraction: bool = False,
+    axis: bool = True,
     axis_param: Optional[Dict[str, Any]] = None,
     width: Optional[Any] = None,
     height: Optional[Any] = None,
+    # Python-specific: explicit data passing (replaces R's parent.frame)
+    _oncoprint_arr: Optional[np.ndarray] = None,
+    _oncoprint_col: Optional[Dict[str, str]] = None,
+    _oncoprint_types: Optional[List[str]] = None,
 ) -> AnnotationFunction:
-    """OncoPrint-specific bar-plot annotation.
+    """OncoPrint-specific stacked bar-plot annotation.
+
+    Port of R ``oncoPrint.R:737-839``.  Shows per-sample (column) or
+    per-gene (row) counts of each alteration type as a stacked barplot
+    with colours matching the oncoPrint colour mapping.
 
     Parameters
     ----------
     type : str or list of str, optional
-        Mutation types to include.
+        Mutation types to include.  ``None`` means all types.
     which : str
-        ``"column"`` or ``"row"``.
+        ``"column"`` (per-sample) or ``"row"`` (per-gene).
     border : bool
         Draw bar borders.
     bar_width : float
         Relative bar width.
+    beside : bool
+        Side-by-side instead of stacked.
     ylim : tuple of float, optional
         Data axis limits.
+    show_fraction : bool
+        Show fractions instead of counts.
+    axis : bool
+        Show axis.
     axis_param : dict, optional
         Extra axis configuration.
-    width : object, optional
-        Annotation width.
-    height : object, optional
-        Annotation height.
+    width, height : object, optional
+        Annotation size.
+    _oncoprint_arr : numpy.ndarray, optional
+        3-D boolean array ``(genes, samples, types)`` from oncoPrint.
+    _oncoprint_col : dict, optional
+        ``{type_name: colour}`` mapping from oncoPrint.
+    _oncoprint_types : list of str, optional
+        Alteration type names from oncoPrint.
 
     Returns
     -------
     AnnotationFunction
     """
-    types = [type] if isinstance(type, str) else (list(type) if type is not None else [])
     w, h = _default_width_height(which, width, height)
+    # R default: 2cm for oncoPrint barplot annotation
+    if which == "column" and h is None:
+        h = grid_py.Unit(2, "cm")
+    if which == "row" and w is None:
+        w = grid_py.Unit(2, "cm")
 
+    # If data is available, pre-compute the stacked barplot matrix
+    # and delegate to anno_barplot (matching R oncoPrint.R:750-803).
+    if _oncoprint_arr is not None and _oncoprint_col is not None and _oncoprint_types is not None:
+        arr = _oncoprint_arr
+        all_type = list(_oncoprint_types)
+        col = dict(_oncoprint_col)
+
+        # Filter to requested types
+        if type is not None:
+            req = [type] if isinstance(type, str) else list(type)
+            all_type = [t for t in all_type if t in req]
+        if not all_type:
+            all_type = list(_oncoprint_types)
+
+        # Select type indices
+        type_indices = [list(_oncoprint_types).index(t)
+                        for t in all_type if t in list(_oncoprint_types)]
+        arr_sub = arr[:, :, type_indices]
+
+        # Compute stacked barplot values
+        # R column_fun: v = apply(arr, c(2,3), sum) → (samples, types)
+        # R row_fun:    v = apply(arr, c(1,3), sum) → (genes, types)
+        if which == "column":
+            v = arr_sub.sum(axis=0)  # (samples, types)
+        else:
+            v = arr_sub.sum(axis=1)  # (genes, types)
+        v = v.astype(float)
+
+        if show_fraction:
+            denom = arr.shape[0] if which == "column" else arr.shape[1]
+            v = v / max(denom, 1)
+
+        # Build colour vector matching type order
+        fill_colors = [col.get(t, "#888888") for t in all_type]
+
+        # R: anno_barplot(v, gp=gpar(fill=col, col=NA), ...)
+        if axis_param is None:
+            if which == "column":
+                axis_param = {"side": "left"}
+            else:
+                axis_param = {"side": "top", "labels_rot": 0}
+
+        # R oncoPrint.R:821: anno@show_name = FALSE
+        anno = anno_barplot(
+            x=v,
+            which=which,
+            bar_width=bar_width,
+            beside=beside,
+            gp={"fill": fill_colors, "col": "transparent"},
+            ylim=ylim,
+            axis=axis,
+            axis_param=axis_param,
+            border=border,
+            width=w,
+            height=h,
+        )
+        anno.show_name = False
+        return anno
+
+    # Fallback: no data available yet (placeholder)
     _which = which
-    _border = border
-    _bar_width = bar_width
-    _ylim = ylim
 
-    var_env: Dict[str, Any] = {"types": types, "data": None}
-
-    def _draw(index: np.ndarray, k: int, n_slices: int) -> None:
-        data = var_env.get("data", None)
-        if data is None:
-            grid_py.grid_text(
-                label="No OncoPrint data",
-                x=grid_py.Unit(0.5, "npc"),
-                y=grid_py.Unit(0.5, "npc"),
-                gp=_to_gpar(col="grey", fontsize=8),
-            )
-            return
-
-        data_arr = np.asarray(data, dtype=float)
-        if data_arr.ndim == 1:
-            data_arr = data_arr.reshape(1, -1)
-
-        subset = data_arr[:, index]
-        ni = len(index)
-        n_types = subset.shape[0]
-
-        total = subset.sum(axis=0)
-        total_max = float(total.max()) if len(total) > 0 else 1.0
-        data_lim = _ylim if _ylim is not None else (0, total_max * 1.05)
-
-        import matplotlib.pyplot as plt
-        cmap = plt.cm.get_cmap("Set2", max(n_types, 1))
-
-        grid_py.push_viewport(grid_py.Viewport(
-            xscale=(0.5, ni + 0.5) if not _is_row(_which) else data_lim,
-            yscale=data_lim if not _is_row(_which) else (0.5, ni + 0.5),
-        ))
-
-        for i in range(ni):
-            bottom = 0.0
-            for t_idx in range(n_types):
-                val = float(subset[t_idx, i])
-                fc = cmap(t_idx)
-                bc = "black" if _border else "transparent"
-
-                if not _is_row(_which):
-                    grid_py.grid_rect(
-                        x=grid_py.Unit(i + 1, "native"),
-                        y=grid_py.Unit(bottom, "native"),
-                        width=grid_py.Unit(_bar_width, "native"),
-                        height=grid_py.Unit(val, "native"),
-                        just="bottom",
-                        gp=_to_gpar(fill=fc, col=bc),
-                    )
-                else:
-                    grid_py.grid_rect(
-                        x=grid_py.Unit(bottom, "native"),
-                        y=grid_py.Unit(i + 1, "native"),
-                        width=grid_py.Unit(val, "native"),
-                        height=grid_py.Unit(_bar_width, "native"),
-                        just="left",
-                        gp=_to_gpar(fill=fc, col=bc),
-                    )
-                bottom += val
-
-        grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
-        grid_py.up_viewport()
+    def _draw_placeholder(index: np.ndarray, k: int, n_slices: int) -> None:
+        grid_py.grid_text(
+            label="No OncoPrint data",
+            x=grid_py.Unit(0.5, "npc"),
+            y=grid_py.Unit(0.5, "npc"),
+            gp=_to_gpar(col="grey", fontsize=8),
+        )
 
     return AnnotationFunction(
-        fun=_draw,
+        fun=_draw_placeholder,
         fun_name="anno_oncoprint_barplot",
         which=which,
-        var_env=var_env,
+        var_env={"types": type},
         n=None,
         data_scale=(0.0, 1.0),
         subsettable=False,
-        show_name=True,
+        show_name=False,
         width=w,
         height=h,
     )
