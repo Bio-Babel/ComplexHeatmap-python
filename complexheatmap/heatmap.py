@@ -1769,6 +1769,7 @@ class Heatmap(AdditiveUnit):
         col_components: List[str],
     ) -> None:
         """Draw column dendrograms using grid_py."""
+        from .heatmap_list import _register_component
         if not self._should_cluster_columns():
             return
         if not self.show_column_dend:
@@ -1800,15 +1801,19 @@ class Heatmap(AdditiveUnit):
             if Z is None:
                 continue
 
+            vp_name = f"{self.name}_column_dend_{ci + 1}"
             slice_vp = grid_py.Viewport(
                 x=slice_x[ci],
                 y=grid_py.Unit(0, "npc"),
                 width=slice_width[ci],
                 height=grid_py.Unit(1, "npc"),
                 just=["left", "bottom"],
-                name=f"{self.name}_column_dend_{ci + 1}",
+                name=vp_name,
             )
             grid_py.push_viewport(slice_vp)
+            # R: ht1_dend_column_1 → lookup: column_dend_ht1_1
+            _register_component(
+                f"column_dend_{self.name}_{ci + 1}", vp_name)
 
             x0, y0, x1, y1 = self._dendrogram_segments(Z, orientation)
             if x0:
@@ -1829,6 +1834,7 @@ class Heatmap(AdditiveUnit):
         col_components: List[str],
     ) -> None:
         """Draw row dendrograms using grid_py."""
+        from .heatmap_list import _register_component
         if not self._should_cluster_rows():
             return
         if not self.show_row_dend:
@@ -1841,7 +1847,6 @@ class Heatmap(AdditiveUnit):
 
         dend_col = col_components.index(dend_comp) + 1
         body_row = row_components.index("heatmap_body") + 1
-
         orientation = self.row_dend_side  # "left" or "right"
 
         vp = grid_py.Viewport(
@@ -1860,15 +1865,17 @@ class Heatmap(AdditiveUnit):
             if Z is None:
                 continue
 
+            vp_name = f"{self.name}_row_dend_{ri + 1}"
             slice_vp = grid_py.Viewport(
                 x=grid_py.Unit(0, "npc"),
                 y=slice_y[ri],
                 width=grid_py.Unit(1, "npc"),
                 height=slice_height[ri],
                 just=["left", "top"],
-                name=f"{self.name}_row_dend_{ri + 1}",
+                name=vp_name,
             )
             grid_py.push_viewport(slice_vp)
+            _register_component(f"row_dend_{self.name}_{ri + 1}", vp_name)
 
             x0, y0, x1, y1 = self._dendrogram_segments(Z, orientation)
             if x0:
@@ -1904,6 +1911,7 @@ class Heatmap(AdditiveUnit):
         """
         if not self.show_column_names:
             return
+        from .heatmap_list import _register_component
 
         comp = f"column_names_{self.column_names_side}"
         if comp not in row_components:
@@ -1962,6 +1970,8 @@ class Heatmap(AdditiveUnit):
                 name=f"{self.name}_column_names_{ci + 1}",
             )
             grid_py.push_viewport(slice_vp)
+            _register_component(
+                f"column_names_{self.name}_{ci + 1}", f"{self.name}_column_names_{ci + 1}")
 
             labels = (
                 [self.column_labels[c] for c in col_ord]
@@ -2009,6 +2019,7 @@ class Heatmap(AdditiveUnit):
         if not self.show_row_names:
             return
 
+        from .heatmap_list import _register_component
         comp = f"row_names_{self.row_names_side}"
         if comp not in col_components:
             return
@@ -2056,6 +2067,8 @@ class Heatmap(AdditiveUnit):
                 name=f"{self.name}_row_names_{ri + 1}",
             )
             grid_py.push_viewport(slice_vp)
+            _register_component(
+                f"row_names_{self.name}_{ri + 1}", f"{self.name}_row_names_{ri + 1}")
 
             labels = (
                 [self.row_labels[r] for r in row_ord]
@@ -2105,6 +2118,7 @@ class Heatmap(AdditiveUnit):
         title_row = row_components.index(comp) + 1
         body_col = col_components.index("heatmap_body") + 1
 
+        from .heatmap_list import _register_component
         vp = grid_py.Viewport(
             layout_pos_row=title_row,
             layout_pos_col=body_col,
@@ -2136,6 +2150,9 @@ class Heatmap(AdditiveUnit):
                     name=f"{self.name}_col_title_{i+1}",
                 )
                 grid_py.push_viewport(slice_vp)
+                _register_component(
+                    f"column_title_{self.name}_{i + 1}",
+                    f"{self.name}_col_title_{i+1}")
                 grid_py.grid_text(
                     label=titles[i], x=0.5, y=0.5,
                     default_units="npc", rot=0, gp=gp,
@@ -2171,6 +2188,7 @@ class Heatmap(AdditiveUnit):
         title_col = col_components.index(comp) + 1
         body_row = row_components.index("heatmap_body") + 1
 
+        from .heatmap_list import _register_component
         vp = grid_py.Viewport(
             layout_pos_row=body_row,
             layout_pos_col=title_col,
@@ -2207,6 +2225,9 @@ class Heatmap(AdditiveUnit):
                     name=f"{self.name}_row_title_{i+1}",
                 )
                 grid_py.push_viewport(slice_vp)
+                _register_component(
+                    f"row_title_{self.name}_{i + 1}",
+                    f"{self.name}_row_title_{i+1}")
                 grid_py.grid_text(
                     label=titles[i], x=0.5, y=0.5,
                     default_units="npc",

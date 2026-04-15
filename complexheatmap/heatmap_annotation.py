@@ -390,13 +390,15 @@ class HeatmapAnnotation:
         gap_mm = float(self.gap) if isinstance(self.gap, (int, float)) else 1.0
         total_size_mm = sum(anno_sizes_mm) + gap_mm * max(n_annos - 1, 0)
 
+        from .heatmap_list import _register_component
+
         for i, sa in enumerate(anno_items):
             sz_mm = anno_sizes_mm[i]
             sz_frac = sz_mm / total_size_mm if total_size_mm > 0 else 1.0 / n_annos
+            # R viewport name: annotation_{name}_{k}
+            anno_vp_name = f"annotation_{sa.name}_{k}"
 
             if self._which == "column":
-                # R line 697-698: stack from top, each track positioned by cumulative size
-                # y = sum(anno_size[i:n]) + sum(gap[i:n]) - gap[n]
                 below_mm = sum(anno_sizes_mm[i+1:]) + gap_mm * max(n_annos - 1 - i, 0)
                 y_frac = below_mm / total_size_mm if total_size_mm > 0 else 0
 
@@ -404,10 +406,9 @@ class HeatmapAnnotation:
                     y=grid_py.Unit(y_frac, "npc"),
                     height=grid_py.Unit(sz_frac, "npc"),
                     just=["center", "bottom"],
+                    name=anno_vp_name,
                 ))
             else:
-                # R line 709: stack from left
-                # x = sum(anno_size[1:i]) + sum(gap[1:i]) - gap[i]
                 left_mm = sum(anno_sizes_mm[:i]) + gap_mm * i
                 x_frac = left_mm / total_size_mm if total_size_mm > 0 else 0
 
@@ -415,7 +416,11 @@ class HeatmapAnnotation:
                     x=grid_py.Unit(x_frac, "npc"),
                     width=grid_py.Unit(sz_frac, "npc"),
                     just=["left", "center"],
+                    name=anno_vp_name,
                 ))
+
+            # Register for decorate_annotation()
+            _register_component(f"annotation_{sa.name}_{k}", anno_vp_name)
 
             sa.draw(index, k=k, n=n)
             grid_py.up_viewport()
