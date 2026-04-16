@@ -17,7 +17,8 @@ class TestDiscreteColorMapping:
         assert cm.is_discrete
         assert not cm.is_continuous
         assert cm.levels == ["A", "B"]
-        assert cm.color_map == {"A": "red", "B": "blue"}
+        # R: colors always stored as hex
+        assert cm.color_map == {"A": "#FF0000", "B": "#0000FF"}
 
     def test_from_list_and_levels(self):
         cm = ColorMapping(
@@ -25,8 +26,8 @@ class TestDiscreteColorMapping:
             levels=["x", "y", "z"],
         )
         assert cm.levels == ["x", "y", "z"]
-        assert cm.map_to_colors("x") == "red"
-        assert cm.map_to_colors("z") == "green"
+        assert cm.map_to_colors("x") == "#FF0000"
+        assert cm.map_to_colors("z") == "#008000"
 
     def test_missing_levels_raises(self):
         with pytest.raises(ValueError, match="levels"):
@@ -53,16 +54,16 @@ class TestDiscreteColorMapping:
     def test_map_array(self):
         cm = ColorMapping(colors={"A": "red", "B": "blue"})
         result = cm.map_to_colors(np.array(["A", "B", "A"]))
-        assert list(result) == ["red", "blue", "red"]
+        assert list(result) == ["#FF0000", "#0000FF", "#FF0000"]
 
     def test_map_list(self):
         cm = ColorMapping(colors={"A": "red", "B": "blue"})
         result = cm.map_to_colors(["B", "A"])
-        assert list(result) == ["blue", "red"]
+        assert list(result) == ["#0000FF", "#FF0000"]
 
     def test_float_key_matching(self):
         cm = ColorMapping(colors={"1": "red", "2": "blue"})
-        assert cm.map_to_colors(1.0) == "red"
+        assert cm.map_to_colors(1.0) == "#FF0000"
 
     def test_auto_name(self):
         cm = ColorMapping(colors={"A": "red"})
@@ -133,7 +134,7 @@ class TestMerge:
         cm2 = ColorMapping(name="b", colors={"Y": "blue"})
         merged = ColorMapping.merge(cm1, cm2)
         assert merged.levels == ["X", "Y"]
-        assert merged.color_map == {"X": "red", "Y": "blue"}
+        assert merged.color_map == {"X": "#FF0000", "Y": "#0000FF"}
         assert merged.name == "a+b"
 
     def test_merge_overlap(self):
@@ -141,7 +142,7 @@ class TestMerge:
         cm2 = ColorMapping(colors={"B": "blue", "C": "yellow"})
         merged = ColorMapping.merge(cm1, cm2)
         # First occurrence wins
-        assert merged.color_map["B"] == "green"
+        assert merged.color_map["B"] == "#008000"  # green in hex
         assert "C" in merged.levels
 
     def test_merge_continuous_raises(self):
