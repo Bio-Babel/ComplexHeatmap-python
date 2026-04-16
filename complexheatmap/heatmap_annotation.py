@@ -29,6 +29,10 @@ import numpy as np
 
 import grid_py
 
+# R: INDEX_ENV$I_ROW_ANNOTATION / I_COLUMN_ANNOTATION (utils.R:44-50)
+_ROW_ANNOTATION_INDEX = 0
+_COLUMN_ANNOTATION_INDEX = 0
+
 from .annotation_function import AnnotationFunction
 from .single_annotation import SingleAnnotation
 from .color_mapping import ColorMapping
@@ -151,9 +155,17 @@ class HeatmapAnnotation:
             raise ValueError(f"`which` must be 'column' or 'row', got {which!r}")
 
         self._which: str = which
-        self._name: str = name if name is not None else (
-            "column_annotation" if which == "column" else "row_annotation"
-        )
+        # R: name = paste0("heatmap_annotation_", get_row_annotation_index())
+        if name is not None:
+            self._name = name
+        else:
+            global _ROW_ANNOTATION_INDEX, _COLUMN_ANNOTATION_INDEX
+            if which == "row":
+                self._name = f"heatmap_annotation_{_ROW_ANNOTATION_INDEX}"
+                _ROW_ANNOTATION_INDEX += 1
+            else:
+                self._name = f"heatmap_annotation_{_COLUMN_ANNOTATION_INDEX}"
+                _COLUMN_ANNOTATION_INDEX += 1
         self.na_col: str = na_col
         self.gp: Dict[str, Any] = gp if gp is not None else {}
         self.border: bool = border
@@ -269,15 +281,21 @@ class HeatmapAnnotation:
         # Distribute total height / width across annotations
         # ------------------------------------------------------------------
         if which == "column" and height is not None and n_annos > 0:
-            total_gap = self.gap * max(n_annos - 1, 0)
-            per_anno = (height - total_gap) / n_annos
+            total_gap_val = self.gap * max(n_annos - 1, 0)
+            if isinstance(height, grid_py.Unit):
+                per_anno = (height - grid_py.Unit(total_gap_val, "mm")) / n_annos
+            else:
+                per_anno = (height - total_gap_val) / n_annos
             for sa in self.anno_list.values():
                 if sa.height is None:
                     sa.height = per_anno
 
         if which == "row" and width is not None and n_annos > 0:
-            total_gap = self.gap * max(n_annos - 1, 0)
-            per_anno = (width - total_gap) / n_annos
+            total_gap_val = self.gap * max(n_annos - 1, 0)
+            if isinstance(width, grid_py.Unit):
+                per_anno = (width - grid_py.Unit(total_gap_val, "mm")) / n_annos
+            else:
+                per_anno = (width - total_gap_val) / n_annos
             for sa in self.anno_list.values():
                 if sa.width is None:
                     sa.width = per_anno
@@ -285,6 +303,15 @@ class HeatmapAnnotation:
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
+
+    @property
+    def name(self) -> str:
+        """Annotation group name (R: ``object@name``)."""
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = value
 
     @property
     def which(self) -> str:
@@ -491,7 +518,7 @@ class HeatmapAnnotation:
     # ------------------------------------------------------------------
 
     def __add__(self, other: Any) -> Any:
-        """Support ``HeatmapAnnotation + Heatmap`` via AdditivUnit protocol."""
+        """Support ``HeatmapAnnotation + Heatmap`` via AdditiveUnit protocol."""
         if hasattr(other, "__radd__"):
             return NotImplemented
         return NotImplemented
@@ -500,6 +527,22 @@ class HeatmapAnnotation:
         if other == 0:
             return self
         return NotImplemented
+
+    def __mod__(self, other: Any) -> Any:
+        """Vertical concatenation (R ``%v%``).
+
+        ``HeatmapAnnotation %v% Heatmap`` adds a column annotation
+        as a row in a vertical HeatmapList.
+        """
+        from .heatmap_list import HeatmapList
+        if self.which != "column":
+            raise ValueError(
+                "Use `which='column'` for vertical concatenation with `%`."
+            )
+        hl = HeatmapList(direction="vertical")
+        hl.add(self)
+        hl.add(other)
+        return hl
 
     # ------------------------------------------------------------------
     # Representation

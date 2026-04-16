@@ -608,20 +608,23 @@ def anno_barplot(
         # Border rect
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
 
-        # Axis (with clean tick labels)
+        # Axis — respects axis_param (R: at, labels, side, labels_rot)
         if _axis and k == 1:
-            # Use grid_pretty for clean tick values, matching R
-            ticks = grid_py.grid_pretty(_data_lim)
-            # Filter ticks within range
-            ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
-            # Format labels to avoid float precision noise
-            tick_labels = [f"{t:g}" for t in ticks]
-            if _is_row(_which):
-                grid_py.grid_xaxis(at=ticks, label=tick_labels,
-                                    gp=grid_py.Gpar(fontsize=7))
+            ap = _axis_param or {}
+            ticks = ap.get("at", None)
+            tick_labels = ap.get("labels", None)
+            if ticks is None:
+                ticks = grid_py.grid_pretty(_data_lim)
+                ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
             else:
-                grid_py.grid_yaxis(at=ticks, label=tick_labels,
-                                    gp=grid_py.Gpar(fontsize=7))
+                ticks = [float(t) for t in ticks]
+            if tick_labels is None:
+                tick_labels = [f"{t:g}" for t in ticks]
+            axis_gp = grid_py.Gpar(fontsize=ap.get("fontsize", 7))
+            if _is_row(_which):
+                grid_py.grid_xaxis(at=ticks, label=tick_labels, gp=axis_gp)
+            else:
+                grid_py.grid_yaxis(at=ticks, label=tick_labels, gp=axis_gp)
 
         grid_py.up_viewport()
 
@@ -847,6 +850,7 @@ def anno_points(
     _pch = pch
     _size = size
     _axis = axis
+    _axis_param = axis_param
     _border = border
 
     def _draw(index: np.ndarray, k: int, n_slices: int) -> None:
@@ -865,21 +869,35 @@ def anno_points(
             for j in range(n_cols):
                 col_vals = subset[:, j]
                 positions = np.arange(1, ni + 1)
+                # Per-column gp: R recycles col/fill per column
+                # (R: subset_gp(gp, i))
+                col_gp = dict(_gp)
+                for gp_key in ("col", "fill"):
+                    if gp_key in col_gp and isinstance(col_gp[gp_key], (list, tuple)):
+                        col_gp[gp_key] = col_gp[gp_key][j % len(col_gp[gp_key])]
+                # Per-column pch (R: pch[i])
+                col_pch = _pch
+                if isinstance(_pch, (list, tuple)) and len(_pch) > 1:
+                    col_pch = _pch[j % len(_pch)]
+                # Per-column size (R: size[i])
+                col_size = _size or 2
+                if isinstance(_size, (list, tuple)) and len(_size) > 1:
+                    col_size = _size[j % len(_size)]
                 if _is_row(_which):
                     grid_py.grid_points(
                         x=grid_py.Unit(col_vals, "native"),
                         y=grid_py.Unit(positions, "native"),
-                        pch=_pch,
-                        size=grid_py.Unit(_size or 2, "mm"),
-                        gp=_to_gpar(**_gp),
+                        pch=col_pch,
+                        size=grid_py.Unit(col_size, "mm"),
+                        gp=_to_gpar(**col_gp),
                     )
                 else:
                     grid_py.grid_points(
                         x=grid_py.Unit(positions, "native"),
                         y=grid_py.Unit(col_vals, "native"),
-                        pch=_pch,
-                        size=grid_py.Unit(_size or 2, "mm"),
-                        gp=_to_gpar(**_gp),
+                        pch=col_pch,
+                        size=grid_py.Unit(col_size, "mm"),
+                        gp=_to_gpar(**col_gp),
                     )
         else:
             positions = np.arange(1, ni + 1)
@@ -901,17 +919,23 @@ def anno_points(
                 )
 
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black" if _border else "transparent"))
-        # Axis with clean tick labels
+        # Axis — respects axis_param (R: at, labels, side, labels_rot)
         if _axis and k == 1:
-            ticks = grid_py.grid_pretty(_data_lim)
-            ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
-            tick_labels = [f"{t:g}" for t in ticks]
-            if _is_row(_which):
-                grid_py.grid_xaxis(at=ticks, label=tick_labels,
-                                    gp=grid_py.Gpar(fontsize=7))
+            ap = _axis_param or {}
+            ticks = ap.get("at", None)
+            tick_labels = ap.get("labels", None)
+            if ticks is None:
+                ticks = grid_py.grid_pretty(_data_lim)
+                ticks = [float(t) for t in ticks if _data_lim[0] <= t <= _data_lim[1]]
             else:
-                grid_py.grid_yaxis(at=ticks, label=tick_labels,
-                                    gp=grid_py.Gpar(fontsize=7))
+                ticks = [float(t) for t in ticks]
+            if tick_labels is None:
+                tick_labels = [f"{t:g}" for t in ticks]
+            axis_gp = grid_py.Gpar(fontsize=ap.get("fontsize", 7))
+            if _is_row(_which):
+                grid_py.grid_xaxis(at=ticks, label=tick_labels, gp=axis_gp)
+            else:
+                grid_py.grid_yaxis(at=ticks, label=tick_labels, gp=axis_gp)
 
         grid_py.up_viewport()
 
@@ -1977,10 +2001,13 @@ def anno_mark(
     labels_rot: Optional[float] = None,
     padding: float = 1.0,
     link_width: float = 5.0,
+    link_height: Optional[float] = None,
     link_gp: Optional[Dict[str, Any]] = None,
     extend: float = 0.0,
 ) -> AnnotationFunction:
     """Mark annotation with labelled connectors.
+
+    Faithfully ports R's ``anno_mark`` (AnnotationFunction-function.R:3132).
 
     Parameters
     ----------
@@ -1991,105 +2018,426 @@ def anno_mark(
     which : str
         ``"column"`` or ``"row"``.
     side : str, optional
-        Side to place labels.
+        Side to place labels.  Default ``"right"`` for row,
+        ``"top"`` for column (matching R).
     lines_gp : dict, optional
-        Graphic parameters for connector lines.
+        Graphic parameters for connector lines (deprecated alias for
+        *link_gp*).
     labels_gp : dict, optional
         Graphic parameters for label text.
     labels_rot : float, optional
-        Label rotation angle.
+        Label rotation angle.  Default ``0`` for row, ``90`` for column.
     padding : float
-        Padding around labels (mm).
+        Padding around labels (mm).  R default: ``unit(1, "mm")``.
     link_width : float
-        Width of connecting lines region (mm).
+        Width of connecting-line region (mm).  R default: ``unit(5, "mm")``.
+    link_height : float, optional
+        Height of connecting-line region (mm).  Defaults to *link_width*.
     link_gp : dict, optional
         Graphic parameters for connecting lines.
     extend : float
-        Extension beyond heatmap region.
+        Extension beyond heatmap region (mm).
 
     Returns
     -------
     AnnotationFunction
     """
+    from ._utils import smart_align, max_text_width, max_text_height
+
     at_arr = np.asarray(at, dtype=int)
-    labels_arr = np.asarray(labels)
+    labels_arr = np.asarray(labels, dtype=str)
     n_val = int(at_arr.max()) + 1 if len(at_arr) > 0 else 0
 
-    lines_merged = _resolve_gp(lines_gp)
+    if link_height is None:
+        link_height = link_width
+
+    if link_gp is None:
+        link_gp = lines_gp
+    link_merged = _resolve_gp(link_gp)
     labels_merged = _resolve_gp(labels_gp)
 
-    if labels_rot is None:
-        labels_rot = 0.0 if which == "row" else 90.0
+    if side is None:
+        side = "right" if _is_row(which) else "top"
 
+    if labels_rot is None:
+        labels_rot = 0.0 if _is_row(which) else 90.0
+
+    # -- R: od = order(at); at = at[od]; labels = labels[od] --------
+    od = np.argsort(at_arr)
+    at_arr = at_arr[od]
+    labels_arr = labels_arr[od]
+
+    # -- Build lookup tables (R: at2index, at2labels) ---------------
+    at2index = {int(a): i for i, a in enumerate(at_arr)}
+    at2labels = {int(a): str(l) for a, l in zip(at_arr, labels_arr)}
+
+    # -- Compute annotation natural size (R:3174-3180) --------------
+    # R: width = link_width + max_text_width(labels, gp=labels_gp, rot=labels_rot)
+    # R: height = link_height + max_text_height(labels, gp=labels_gp, rot=labels_rot)
+    _link_w_mm = float(link_width)
+    _link_h_mm = float(link_height)
+
+    if _is_row(which):
+        # R: width = link_width + max_text_width(labels, gp, rot)
+        # max_text_width returns max(grobWidth(textGrob(text[i],...))) in mm
+        _text_w = max_text_width(list(labels_arr), gp=labels_merged,
+                                 rot=labels_rot)
+        _tw_mm_arr = grid_py.convert_width(_text_w, "mm", valueOnly=True)
+        _tw_mm = float(np.max(_tw_mm_arr))
+        anno_width_mm = _link_w_mm + _tw_mm
+        anno_width = grid_py.Unit(anno_width_mm, "mm")
+        anno_height = None  # 1 npc
+    else:
+        # R: height = link_height + max_text_height(labels, gp, rot)
+        _text_h = max_text_height(list(labels_arr), gp=labels_merged,
+                                  rot=labels_rot)
+        _th_mm_arr = grid_py.convert_height(_text_h, "mm", valueOnly=True)
+        _th_mm = float(np.max(_th_mm_arr))
+        anno_height_mm = _link_h_mm + _th_mm
+        anno_height = grid_py.Unit(anno_height_mm, "mm")
+        anno_width = None  # 1 npc
+
+    # -- Capture variables for the draw closure ----------------------
     _at = at_arr
     _labels = labels_arr
     _which = which
-    _lines_gp = lines_merged
+    _side = side
+    _link_gp = link_merged
     _labels_gp = labels_merged
-    _labels_rot = labels_rot
+    _labels_rot = labels_rot % 360
+    _padding_mm = float(padding)
+    _extend = np.atleast_1d(np.asarray(extend, dtype=float))
+    if len(_extend) == 1:
+        _extend = np.repeat(_extend, 2)
 
-    def _draw(index: np.ndarray, k: int, n_slices: int) -> None:
+    # -- Row draw function (R:3193-3268) -----------------------------
+    def _row_draw(index: np.ndarray, k: int, n_slices: int) -> None:
         ni = len(index)
-        n_marks = len(_at)
+        # Intersect `at` with current slice index (R:3202-3210)
+        cur_at = np.array([a for a in _at if a in index], dtype=int)
+        if len(cur_at) == 0:
+            return
+        # R reverses for right-side: labels = rev(at2labels[...])
+        cur_labels = [at2labels[int(a)] for a in reversed(cur_at)]
+        cur_link_gp_indices = [at2index[int(a)] for a in reversed(cur_at)]
 
-        label_positions = (
-            np.linspace(0.5, ni - 0.5, n_marks) if n_marks > 1
-            else np.array([ni / 2.0])
-        )
+        # R: if(is.null(.scale)) .scale = c(0.5, n+0.5)
+        # When _pos/_scale are injected by HeatmapList (split scenario),
+        # use those instead of default positions.
+        _injected_pos = var_env.get('_pos', None)
+        _injected_scale = var_env.get('_scale', None)
 
+        if _injected_scale is not None:
+            scale = tuple(_injected_scale)
+        else:
+            scale = (0.5, ni + 0.5)
+
+        # R: pushViewport(viewport(xscale = c(0, 1), yscale = .scale))
         grid_py.push_viewport(grid_py.Viewport(
-            xscale=(0, 1.5) if _is_row(_which) else (-0.5, ni - 0.5),
-            yscale=(-0.5, ni - 0.5) if _is_row(_which) else (0, 1.5),
+            xscale=(0, 1), yscale=scale,
         ))
 
-        line_col = _lines_gp.get("col", "black")
-        line_lwd = _lines_gp.get("lwd", 0.5)
+        # Extend in native units
+        _cv = lambda u, to: float(np.squeeze(
+            grid_py.convert_height(u, to, valueOnly=True)))
+        ext_native = np.array([
+            _cv(grid_py.Unit(_extend[0], "mm"), "native"),
+            _cv(grid_py.Unit(_extend[1], "mm"), "native"),
+        ])
 
-        for i, (src_idx, lbl) in enumerate(zip(_at, _labels)):
-            matches = np.where(index == src_idx)[0]
-            if len(matches) == 0:
-                continue
-            src_pos = float(matches[0])
-            dst_pos = float(label_positions[i])
-
-            if _is_row(_which):
-                grid_py.grid_segments(
-                    x0=grid_py.Unit([0, 0.4, 0.6], "npc"),
-                    y0=grid_py.Unit([src_pos, src_pos, dst_pos], "native"),
-                    x1=grid_py.Unit([0.4, 0.6, 1.0], "npc"),
-                    y1=grid_py.Unit([src_pos, dst_pos, dst_pos], "native"),
-                    gp=_to_gpar(col=line_col, lwd=line_lwd),
-                )
-                grid_py.grid_text(
-                    label=str(lbl),
-                    x=grid_py.Unit(1.05, "npc"),
-                    y=grid_py.Unit(dst_pos, "native"),
-                    just="left",
-                    rot=_labels_rot,
-                    gp=_to_gpar(**_labels_gp),
-                )
+        # R: text_height = convertHeight(text_height(labels, gp) + padding, "native")
+        txt_h_list = []
+        for lbl in cur_labels:
+            if _labels_rot in (90, 270):
+                th = _cv(
+                    grid_py.string_width([lbl]) + grid_py.Unit(_padding_mm, "mm"),
+                    "native")
             else:
-                grid_py.grid_segments(
-                    x0=grid_py.Unit([src_pos, src_pos, dst_pos], "native"),
-                    y0=grid_py.Unit([0, 0.4, 0.6], "npc"),
-                    x1=grid_py.Unit([src_pos, dst_pos, dst_pos], "native"),
-                    y1=grid_py.Unit([0.4, 0.6, 1.0], "npc"),
-                    gp=_to_gpar(col=line_col, lwd=line_lwd),
-                )
+                th = _cv(
+                    grid_py.string_height([lbl]) + grid_py.Unit(_padding_mm, "mm"),
+                    "native")
+            txt_h_list.append(th)
+        text_height = np.array(txt_h_list)
+
+        # R: if(is.null(.pos)) { i2 = rev(which(...))); pos = n-i2+1 }
+        #    else { pos = .pos[rev(which(index %in% at))] }
+        rev_indices = [np.where(index == a)[0][0] for a in reversed(cur_at)]
+        if _injected_pos is not None:
+            pos = np.array([_injected_pos[j] for j in rev_indices],
+                           dtype=float)
+        else:
+            i2 = np.array(rev_indices, dtype=float)
+            pos = ni - i2
+
+        # R: smartAlign(h1, h2, c(.scale[1] - extend[1], .scale[2] + extend[2]))
+        h1 = pos - text_height * 0.5
+        h2 = pos + text_height * 0.5
+        pos_adjusted = smart_align(
+            h1, h2,
+            (scale[0] - ext_native[0], scale[1] + ext_native[1]),
+        )
+        h = (pos_adjusted[:, 0] + pos_adjusted[:, 1]) / 2.0
+
+        n2 = len(cur_labels)
+
+        # -- Determine justification (R:3234-3253) ---
+        if _side == "right":
+            if _labels_rot == 90:
+                just = ["center", "top"]
+            elif _labels_rot == 270:
+                just = ["center", "bottom"]
+            elif 90 < _labels_rot < 270:
+                just = ["right", "center"]
+            else:
+                just = ["left", "center"]
+        else:
+            if _labels_rot == 90:
+                just = ["center", "bottom"]
+            elif _labels_rot == 270:
+                just = ["center", "top"]
+            elif 90 < _labels_rot < 270:
+                just = ["left", "center"]
+            else:
+                just = ["right", "center"]
+
+        lw_unit = grid_py.Unit(_link_w_mm, "mm")
+
+        if _side == "right":
+            # R:3255-3260
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _labels_gp.items()}
                 grid_py.grid_text(
-                    label=str(lbl),
-                    x=grid_py.Unit(dst_pos, "native"),
-                    y=grid_py.Unit(1.05, "npc"),
-                    just="bottom",
+                    label=cur_labels[i_m],
+                    x=lw_unit,
+                    y=grid_py.Unit(h[i_m], "native"),
+                    just=just,
                     rot=_labels_rot,
-                    gp=_to_gpar(**_labels_gp),
+                    gp=_to_gpar(**gp_i),
+                )
+            # R: link_width = link_width - unit(1, "mm")
+            lw_seg = grid_py.Unit(_link_w_mm - 1.0, "mm")
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _link_gp.items()}
+                # Segment 1: x=0 → x=link_width*1/3, y=pos
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(0, "npc"),
+                    y0=grid_py.Unit(pos[i_m], "native"),
+                    x1=lw_seg * (1.0 / 3),
+                    y1=grid_py.Unit(pos[i_m], "native"),
+                    gp=_to_gpar(**gp_i),
+                )
+                # Segment 2: link_width*1/3 → 2/3, pos → h
+                grid_py.grid_segments(
+                    x0=lw_seg * (1.0 / 3),
+                    y0=grid_py.Unit(pos[i_m], "native"),
+                    x1=lw_seg * (2.0 / 3),
+                    y1=grid_py.Unit(h[i_m], "native"),
+                    gp=_to_gpar(**gp_i),
+                )
+                # Segment 3: link_width*2/3 → link_width, h → h
+                grid_py.grid_segments(
+                    x0=lw_seg * (2.0 / 3),
+                    y0=grid_py.Unit(h[i_m], "native"),
+                    x1=lw_seg,
+                    y1=grid_py.Unit(h[i_m], "native"),
+                    gp=_to_gpar(**gp_i),
+                )
+        else:
+            # R:3262-3266 (side == "left")
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _labels_gp.items()}
+                grid_py.grid_text(
+                    label=cur_labels[i_m],
+                    x=grid_py.Unit(1, "npc") - lw_unit,
+                    y=grid_py.Unit(h[i_m], "native"),
+                    just=just,
+                    rot=_labels_rot,
+                    gp=_to_gpar(**gp_i),
+                )
+            lw_seg = grid_py.Unit(_link_w_mm - 1.0, "mm")
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _link_gp.items()}
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(1, "npc"),
+                    y0=grid_py.Unit(pos[i_m], "native"),
+                    x1=grid_py.Unit(1, "npc") - lw_seg * (1.0 / 3),
+                    y1=grid_py.Unit(pos[i_m], "native"),
+                    gp=_to_gpar(**gp_i),
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(1, "npc") - lw_seg * (1.0 / 3),
+                    y0=grid_py.Unit(pos[i_m], "native"),
+                    x1=grid_py.Unit(1, "npc") - lw_seg * (2.0 / 3),
+                    y1=grid_py.Unit(h[i_m], "native"),
+                    gp=_to_gpar(**gp_i),
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(1, "npc") - lw_seg * (2.0 / 3),
+                    y0=grid_py.Unit(h[i_m], "native"),
+                    x1=grid_py.Unit(1, "npc") - lw_seg,
+                    y1=grid_py.Unit(h[i_m], "native"),
+                    gp=_to_gpar(**gp_i),
                 )
 
         grid_py.up_viewport()
 
+    # -- Column draw function (R:3270-3346) --------------------------
+    def _col_draw(index: np.ndarray, k: int, n_slices: int) -> None:
+        ni = len(index)
+        cur_at = np.array([a for a in _at if a in index], dtype=int)
+        if len(cur_at) == 0:
+            return
+        # Column: no reversal (R:3284)
+        cur_labels = [at2labels[int(a)] for a in cur_at]
+        cur_link_gp_indices = [at2index[int(a)] for a in cur_at]
+
+        scale = (0.5, ni + 0.5)
+        # R: pushViewport(viewport(yscale = c(0, 1), xscale = .scale))
+        grid_py.push_viewport(grid_py.Viewport(
+            xscale=scale, yscale=(0, 1),
+        ))
+
+        _cvw = lambda u, to: float(np.squeeze(
+            grid_py.convert_width(u, to, valueOnly=True)))
+        ext_native = np.array([
+            _cvw(grid_py.Unit(_extend[0], "mm"), "native"),
+            _cvw(grid_py.Unit(_extend[1], "mm"), "native"),
+        ])
+
+        txt_h_list = []
+        for lbl in cur_labels:
+            if _labels_rot in (0, 180):
+                th = _cvw(
+                    grid_py.string_width([lbl]) + grid_py.Unit(_padding_mm, "mm"),
+                    "native")
+            else:
+                th = _cvw(
+                    grid_py.string_height([lbl]) + grid_py.Unit(_padding_mm, "mm"),
+                    "native")
+            txt_h_list.append(th)
+        text_height = np.array(txt_h_list)
+
+        # R: i2 = which(index %in% at); pos = i2
+        i2 = np.array([np.where(index == a)[0][0] for a in cur_at],
+                       dtype=float)
+        pos = i2 + 1  # 1-based in R
+
+        h1 = pos - text_height * 0.5
+        h2 = pos + text_height * 0.5
+        pos_adjusted = smart_align(
+            h1, h2,
+            (scale[0] - ext_native[0], scale[1] + ext_native[1]),
+        )
+        h = (pos_adjusted[:, 0] + pos_adjusted[:, 1]) / 2.0
+
+        n2 = len(cur_labels)
+
+        # Justification (R:3311-3330)
+        if _side == "top":
+            if _labels_rot == 0:
+                just = ["center", "bottom"]
+            elif _labels_rot == 180:
+                just = ["center", "top"]
+            elif 0 < _labels_rot < 180:
+                just = ["left", "center"]
+            else:
+                just = ["right", "center"]
+        else:
+            if _labels_rot == 0:
+                just = ["center", "top"]
+            elif _labels_rot == 180:
+                just = ["center", "bottom"]
+            elif 0 < _labels_rot < 180:
+                just = ["right", "center"]
+            else:
+                just = ["left", "center"]
+
+        lh_unit = grid_py.Unit(_link_h_mm, "mm")
+
+        if _side == "top":
+            # R:3332-3337
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _labels_gp.items()}
+                grid_py.grid_text(
+                    label=cur_labels[i_m],
+                    x=grid_py.Unit(h[i_m], "native"),
+                    y=lh_unit,
+                    just=just,
+                    rot=_labels_rot,
+                    gp=_to_gpar(**gp_i),
+                )
+            lh_seg = grid_py.Unit(_link_h_mm - 1.0, "mm")
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _link_gp.items()}
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(pos[i_m], "native"),
+                    y0=grid_py.Unit(0, "npc"),
+                    x1=grid_py.Unit(pos[i_m], "native"),
+                    y1=lh_seg * (1.0 / 3),
+                    gp=_to_gpar(**gp_i),
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(pos[i_m], "native"),
+                    y0=lh_seg * (1.0 / 3),
+                    x1=grid_py.Unit(h[i_m], "native"),
+                    y1=lh_seg * (2.0 / 3),
+                    gp=_to_gpar(**gp_i),
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(h[i_m], "native"),
+                    y0=lh_seg * (2.0 / 3),
+                    x1=grid_py.Unit(h[i_m], "native"),
+                    y1=lh_seg,
+                    gp=_to_gpar(**gp_i),
+                )
+        else:
+            # R:3338-3344 (side == "bottom")
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _labels_gp.items()}
+                grid_py.grid_text(
+                    label=cur_labels[i_m],
+                    x=grid_py.Unit(h[i_m], "native"),
+                    y=grid_py.Unit(1, "npc") - lh_unit,
+                    just=just,
+                    rot=_labels_rot,
+                    gp=_to_gpar(**gp_i),
+                )
+            lh_seg = grid_py.Unit(_link_h_mm - 1.0, "mm")
+            for i_m in range(n2):
+                gp_i = {k: v for k, v in _link_gp.items()}
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(pos[i_m], "native"),
+                    y0=grid_py.Unit(1, "npc"),
+                    x1=grid_py.Unit(pos[i_m], "native"),
+                    y1=grid_py.Unit(1, "npc") - lh_seg * (1.0 / 3),
+                    gp=_to_gpar(**gp_i),
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(pos[i_m], "native"),
+                    y0=grid_py.Unit(1, "npc") - lh_seg * (1.0 / 3),
+                    x1=grid_py.Unit(h[i_m], "native"),
+                    y1=grid_py.Unit(1, "npc") - lh_seg * (2.0 / 3),
+                    gp=_to_gpar(**gp_i),
+                )
+                grid_py.grid_segments(
+                    x0=grid_py.Unit(h[i_m], "native"),
+                    y0=grid_py.Unit(1, "npc") - lh_seg * (2.0 / 3),
+                    x1=grid_py.Unit(h[i_m], "native"),
+                    y1=grid_py.Unit(1, "npc") - lh_seg,
+                    gp=_to_gpar(**gp_i),
+                )
+
+        grid_py.up_viewport()
+
+    # -- Select draw function ----------------------------------------
+    if _is_row(which):
+        _draw_fn = _row_draw
+    else:
+        _draw_fn = _col_draw
+
     var_env: Dict[str, Any] = {"at": at_arr, "labels": labels_arr}
     return AnnotationFunction(
-        fun=_draw,
+        fun=_draw_fn,
         fun_name="anno_mark",
         which=which,
         var_env=var_env,
@@ -2097,8 +2445,8 @@ def anno_mark(
         data_scale=(0.0, 1.0),
         subsettable=False,
         show_name=False,
-        width=link_width + 10.0 if _is_row(which) else None,
-        height=link_width + 10.0 if not _is_row(which) else None,
+        width=anno_width,
+        height=anno_height,
     )
 
 
@@ -2279,71 +2627,219 @@ def anno_summary(
     extend: float = 0.05,
     outline: bool = True,
     box_width: float = 0.6,
+    pch: int = 1,
+    size: Any = None,
     gp: Optional[Dict[str, Any]] = None,
     width: Optional[Any] = None,
     height: Optional[Any] = None,
 ) -> AnnotationFunction:
-    """Summary annotation (box-plot for continuous, stacked bars for discrete).
+    """Summary annotation (boxplot for continuous, stacked bars for discrete).
+
+    Faithfully ports R's ``anno_summary``
+    (AnnotationFunction-function.R:3447-3579).
+
+    The annotation summarises the data in the parent heatmap across
+    k-means (or other) row/column slices.  For continuous data, a
+    boxplot is drawn per slice.  For discrete data, stacked proportion
+    bars are drawn.
+
+    The parent heatmap's matrix is injected via the ``var_env["_ht_ref"]``
+    mechanism — the ``Heatmap`` class populates this before drawing.
 
     Parameters
     ----------
     which : str
         ``"column"`` or ``"row"``.
     border : bool
-        Draw borders.
+        Draw border.
     bar_width : float
-        Relative bar width for discrete mode.
+        Relative bar width (discrete mode).
     axis : bool
         Show data axis.
     axis_param : dict, optional
-        Extra axis configuration.
-    ylim : tuple of float, optional
+        Custom axis ticks/labels (``at``, ``labels``).
+    ylim : tuple, optional
         Data axis limits.
     extend : float
         Fraction to extend limits.
     outline : bool
-        Show outliers in box-plot mode.
+        Show outliers in boxplot mode.
     box_width : float
-        Relative box width in box-plot mode.
+        Relative box width (boxplot mode).
+    pch : int
+        Point character for outliers.
+    size : object, optional
+        Outlier point size.
     gp : dict, optional
-        Graphic parameters.
-    width : object, optional
-        Annotation width.
-    height : object, optional
-        Annotation height.
+        Graphic parameters (``fill`` colors per slice).
+    width, height : object, optional
+        Annotation dimensions.
 
     Returns
     -------
     AnnotationFunction
     """
+    from .grid_extensions import grid_boxplot as _grid_boxplot
+
     merged_gp = _resolve_gp(gp)
     w, h = _default_width_height(which, width, height)
     _which = which
+    _border = border
+    _bar_width = bar_width
+    _axis = axis
+    _axis_param = axis_param
+    _ylim = ylim
+    _extend = extend
+    _outline = outline
+    _box_width = box_width
+    _pch = pch
+    _size = size
+    _gp = merged_gp
 
-    var_env: Dict[str, Any] = {"gp": gp, "data": None}
+    # var_env holds the heatmap reference — populated by Heatmap before drawing
+    var_env: Dict[str, Any] = {"gp": gp, "_ht_ref": None}
 
     def _draw(index: np.ndarray, k: int, n_slices: int) -> None:
-        data = var_env.get("data", None)
-        if data is None:
-            grid_py.grid_text(
-                label="No data",
-                x=grid_py.Unit(0.5, "npc"),
-                y=grid_py.Unit(0.5, "npc"),
-                gp=_to_gpar(col="grey", fontsize=8),
-            )
+        ht_ref = var_env.get("_ht_ref", None)
+        if ht_ref is None:
+            # Fallback: no heatmap data available
+            grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
             return
 
-        data_arr = np.asarray(data, dtype=float)
-        subset = data_arr[index] if data_arr.ndim == 1 else data_arr[index, :]
-        flat = subset.ravel()
-        flat = flat[~np.isnan(flat)]
+        mat = ht_ref.matrix
+        is_discrete = not np.issubdtype(mat.dtype, np.floating)
 
-        if len(flat) == 0:
+        # Get the order list for the split dimension
+        if _is_row(_which):
+            # column annotation → summarise across row slices
+            order_list = ht_ref._row_order_list or [np.arange(mat.shape[0])]
+        else:
+            order_list = ht_ref._column_order_list or [np.arange(mat.shape[1])]
+
+        ng = len(order_list)
+        if ng == 0:
             return
 
-        grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
+        if is_discrete:
+            # --- DISCRETE: stacked proportion bars ---
+            # (R AnnotationFunction-function.R:3508-3519)
+            from collections import Counter
 
-    return AnnotationFunction(
+            if _is_row(_which):
+                tl = []
+                for od in order_list:
+                    vals = mat[od, 0] if mat.ndim == 2 else mat[od]
+                    tl.append(Counter(vals))
+            else:
+                tl = []
+                for od in order_list:
+                    vals = mat[0, od] if mat.ndim == 2 else mat[od]
+                    tl.append(Counter(vals))
+
+            # Get all categories and their colors from gp
+            all_cats = sorted(set().union(*[c.keys() for c in tl]))
+
+            grid_py.push_viewport(grid_py.Viewport(
+                xscale=(0.5, ng + 0.5), yscale=(0, 1)))
+
+            for i in range(ng):
+                total = sum(tl[i].values()) or 1
+                props = {c: tl[i].get(c, 0) / total for c in all_cats}
+                cum = 0
+                for ci, cat in enumerate(all_cats):
+                    p = props[cat]
+                    fill_col = "grey"
+                    fill_list = _gp.get("fill", None)
+                    if isinstance(fill_list, (list, tuple)):
+                        fill_col = fill_list[ci % len(fill_list)]
+                    elif isinstance(fill_list, str):
+                        fill_col = fill_list
+                    grid_py.grid_rect(
+                        x=grid_py.Unit(i + 1, "native"),
+                        y=grid_py.Unit(cum + p, "native"),
+                        width=grid_py.Unit(_bar_width, "native"),
+                        height=grid_py.Unit(p, "native"),
+                        just="top",
+                        gp=grid_py.Gpar(fill=fill_col, col="white"),
+                    )
+                    cum += p
+
+            grid_py.up_viewport()
+
+        else:
+            # --- CONTINUOUS: boxplots ---
+            # (R AnnotationFunction-function.R:3521-3554)
+            if not _is_row(_which):
+                # Column annotation → summarise rows per slice
+                # Each vl[i] contains all values in the slice
+                vl = [mat[od].ravel().astype(float) for od in order_list]
+            else:
+                # Row annotation → summarise columns per slice
+                vl = [mat[:, od].ravel().astype(float) for od in order_list]
+
+            # Compute data scale
+            if _ylim is not None:
+                data_scale = list(_ylim)
+            else:
+                all_vals = np.concatenate([v[np.isfinite(v)] for v in vl
+                                           if len(v[np.isfinite(v)]) > 0])
+                if len(all_vals) == 0:
+                    data_scale = [0.0, 1.0]
+                else:
+                    data_scale = [float(np.min(all_vals)), float(np.max(all_vals))]
+            rng = data_scale[1] - data_scale[0]
+            if rng == 0:
+                rng = max(abs(data_scale[0]), 1.0)
+            data_scale[0] -= _extend * rng
+            data_scale[1] += _extend * rng
+
+            grid_py.push_viewport(grid_py.Viewport(
+                xscale=(0.5, ng + 0.5), yscale=tuple(data_scale)))
+
+            for i in range(ng):
+                v = vl[i]
+                v = v[np.isfinite(v)]
+                if len(v) == 0:
+                    continue
+
+                # Per-slice fill color (R: recycle_gp + subset_gp)
+                fill_col = "#CCCCCC"
+                fill_list = _gp.get("fill", None)
+                if isinstance(fill_list, (list, tuple)):
+                    fill_col = fill_list[i % len(fill_list)]
+                elif isinstance(fill_list, str):
+                    fill_col = fill_list
+
+                bp_grob = _grid_boxplot(
+                    value=v, pos=float(i + 1),
+                    outline=_outline, box_width=_box_width,
+                    gp={"fill": fill_col, "col": "black"},
+                    direction="vertical",
+                )
+                grid_py.grid_draw(bp_grob)
+
+            # Axis
+            if _axis:
+                ap = _axis_param or {}
+                ticks = ap.get("at", None)
+                tick_labels = ap.get("labels", None)
+                if ticks is None:
+                    ticks = grid_py.grid_pretty(data_scale)
+                    ticks = [float(t) for t in ticks
+                             if data_scale[0] <= t <= data_scale[1]]
+                else:
+                    ticks = [float(t) for t in ticks]
+                if tick_labels is None:
+                    tick_labels = [f"{t:g}" for t in ticks]
+                grid_py.grid_yaxis(at=ticks, label=tick_labels,
+                                   gp=grid_py.Gpar(fontsize=7))
+
+            grid_py.up_viewport()
+
+        if _border:
+            grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
+
+    af = AnnotationFunction(
         fun=_draw,
         fun_name="anno_summary",
         which=which,
@@ -2355,6 +2851,9 @@ def anno_summary(
         width=w,
         height=h,
     )
+    # Mark as needing heatmap reference injection
+    af._needs_ht_ref = True
+    return af
 
 
 # =========================================================================
