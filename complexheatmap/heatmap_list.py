@@ -377,22 +377,22 @@ class HeatmapList:
                 continue
 
             if self.direction == "horizontal":
-                main_ro = None
-                if hasattr(main_ht, "get_row_order"):
-                    main_ro = main_ht.get_row_order()
+                # R: propagate row_order_list (per-slice ordering) from main
+                # so all heatmaps share the same row split structure
+                if hasattr(main_ht, "_row_order_list") and main_ht._row_order_list:
+                    ht._row_order_list = list(main_ht._row_order_list)
+                    ht._row_split_labels = getattr(main_ht, "_row_split_labels", None)
+                    ht.cluster_rows = False
                 elif hasattr(main_ht, "_row_order"):
-                    main_ro = main_ht._row_order
-                if main_ro is not None and hasattr(ht, "_row_order"):
-                    ht._row_order = main_ro
+                    ht._row_order = main_ht._row_order
                     ht.cluster_rows = False
             else:
-                main_co = None
-                if hasattr(main_ht, "get_column_order"):
-                    main_co = main_ht.get_column_order()
+                if hasattr(main_ht, "_column_order_list") and main_ht._column_order_list:
+                    ht._column_order_list = list(main_ht._column_order_list)
+                    ht._column_split_labels = getattr(main_ht, "_column_split_labels", None)
+                    ht.cluster_columns = False
                 elif hasattr(main_ht, "_column_order"):
-                    main_co = main_ht._column_order
-                if main_co is not None and hasattr(ht, "_column_order"):
-                    ht._column_order = main_co
+                    ht._column_order = main_ht._column_order
                     ht.cluster_columns = False
 
             ht.make_layout()
