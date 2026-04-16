@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "complexheatmap-py"
-version = "0.1.0"
+version = "2.25.3+ad11b26"
 description = "Python port of the R ComplexHeatmap package (grid_py backend)"
 requires-python = ">=3.10"
 license = "Artistic-2.0"
@@ -13,7 +13,6 @@ dependencies = [
     "scipy>=1.10",
     "pandas>=2.0",
     "grid_py",
-    "scales",
     "Pillow>=9.0",
 ]
 
