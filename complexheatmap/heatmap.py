@@ -226,18 +226,49 @@ def _kmeans_split(mat: np.ndarray, k: int, repeats: int = 1) -> np.ndarray:
 def _factor_to_slices(
     factor: np.ndarray,
 ) -> Tuple[List[Any], List[np.ndarray]]:
-    """Convert a factor vector to ordered groups."""
+    """Convert a factor vector to ordered groups.
+
+    If *factor* was created from a ``pd.Categorical`` with explicit
+    categories, those categories define the level order (matching R's
+    ``factor(x, levels=...)``) and only categories actually present in the
+    data are included.  Otherwise, first-occurrence order is used.
+    """
+    import pandas as pd
+
+    # Detect pd.Categorical stored inside an object-dtype ndarray
+    # (np.asarray(pd.Categorical(...)) produces object array but the
+    # original Categorical may be accessible via the source).
+    cat_order: Optional[list] = None
+    if hasattr(factor, "dtype"):
+        if isinstance(factor.dtype, pd.CategoricalDtype):
+            # pd.Categorical or pd.arrays.CategoricalArray
+            cat_order = list(factor.categories)
+        elif factor.dtype == object:
+            pass  # fall through to first-occurrence
+
+    if cat_order is not None:
+        # Use category order, only keeping levels present in data
+        data_set = set(factor)
+        levels = [c for c in cat_order if c in data_set]
+        val_to_idx = {v: i for i, v in enumerate(levels)}
+        groups: List[List[int]] = [[] for _ in levels]
+        for i, val in enumerate(factor):
+            if val in val_to_idx:
+                groups[val_to_idx[val]].append(i)
+        return levels, [np.array(g, dtype=int) for g in groups]
+
+    # Default: first-occurrence order
     seen: Dict[Any, int] = {}
-    levels: List[Any] = []
-    groups: List[List[int]] = []
+    levels_fo: List[Any] = []
+    groups_fo: List[List[int]] = []
     for i, val in enumerate(factor):
         key = val if not isinstance(val, float) or not np.isnan(val) else "__NA__"
         if key not in seen:
-            seen[key] = len(levels)
-            levels.append(val)
-            groups.append([])
-        groups[seen[key]].append(i)
-    return levels, [np.array(g, dtype=int) for g in groups]
+            seen[key] = len(levels_fo)
+            levels_fo.append(val)
+            groups_fo.append([])
+        groups_fo[seen[key]].append(i)
+    return levels_fo, [np.array(g, dtype=int) for g in groups_fo]
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +291,38 @@ class AdditiveUnit:
             return NotImplemented
         from .heatmap_list import HeatmapList
         hl = HeatmapList()
+        hl.add(self)
+        hl.add(other)
+        return hl
+
+    def __mod__(self, other: Any) -> Any:
+        """Vertical concatenation operator, mirroring R's ``%v%``.
+
+        ``ht1 % ht2`` creates a :class:`HeatmapList` with
+        ``direction="vertical"``, matching R's
+        ``ht1 %v% ht2`` (AdditiveUnit-class.R:112-134).
+
+        For vertical lists, all heatmaps must have the same number of
+        columns.  ``HeatmapAnnotation`` objects must have
+        ``which="column"`` (they become column-annotation rows in the
+        vertical stack).
+        """
+        from .heatmap_annotation import HeatmapAnnotation
+        if not isinstance(other, (AdditiveUnit, HeatmapAnnotation)):
+            return NotImplemented
+        # Validate: HeatmapAnnotation must be column-type for %v%
+        if isinstance(other, HeatmapAnnotation) and other.which != "column":
+            raise ValueError(
+                "Use `which='column'` or `columnAnnotation()` when adding "
+                "annotations vertically with `%`."
+            )
+        if isinstance(self, HeatmapAnnotation) and self.which != "column":
+            raise ValueError(
+                "Use `which='column'` or `columnAnnotation()` when adding "
+                "annotations vertically with `%`."
+            )
+        from .heatmap_list import HeatmapList
+        hl = HeatmapList(direction="vertical")
         hl.add(self)
         hl.add(other)
         return hl
@@ -479,11 +542,18 @@ class Heatmap(AdditiveUnit):
         self.row_km_repeats: int = row_km_repeats
         self.column_km: Optional[int] = column_km if column_km is not None and column_km > 1 else None
         self.column_km_repeats: int = column_km_repeats
+        # Preserve pd.Categorical dtype for ordered factor support
+        # (np.asarray strips CategoricalDtype → use pd.array or keep as-is)
+        import pandas as _pd
         self._row_split_input = (
-            np.asarray(row_split) if row_split is not None else None
+            _pd.array(row_split) if (row_split is not None and isinstance(
+                getattr(row_split, 'dtype', None), _pd.CategoricalDtype))
+            else (np.asarray(row_split) if row_split is not None else None)
         )
         self._column_split_input = (
-            np.asarray(column_split) if column_split is not None else None
+            _pd.array(column_split) if (column_split is not None and isinstance(
+                getattr(column_split, 'dtype', None), _pd.CategoricalDtype))
+            else (np.asarray(column_split) if column_split is not None else None)
         )
 
         # Gaps
@@ -890,9 +960,14 @@ class Heatmap(AdditiveUnit):
             return
 
         # Standard path: factor-based split or k-means
-        row_factor: Optional[np.ndarray] = None
+        row_factor = None
+        _row_has_ordered_categories = False
         if self._row_split_input is not None:
             row_factor = self._row_split_input
+            # Detect ordered pd.Categorical (like R's ordered factor)
+            import pandas as _pd
+            if isinstance(getattr(row_factor, 'dtype', None), _pd.CategoricalDtype):
+                _row_has_ordered_categories = True
         elif self.row_km is not None and self.row_km > 1:
             row_factor = _kmeans_split(mat, self.row_km, self.row_km_repeats)
 
@@ -927,12 +1002,18 @@ class Heatmap(AdditiveUnit):
                 row_dend_list_std.append(None)
 
         row_levels = list(levels) if self._row_split_labels is not None else None
-        row_order_list_std, row_dend_list_std, row_levels, row_dend_slice = self._cluster_slice_order(
-            row_order_list_std,
-            row_dend_list_std,
-            row_levels,
-            axis="row",
-        )
+
+        # R preserves factor level order when split is an ordered factor.
+        # Only cluster-reorder slices when the split has no explicit order.
+        if _row_has_ordered_categories:
+            row_dend_slice = None
+        else:
+            row_order_list_std, row_dend_list_std, row_levels, row_dend_slice = self._cluster_slice_order(
+                row_order_list_std,
+                row_dend_list_std,
+                row_levels,
+                axis="row",
+            )
 
         self._row_order_list = row_order_list_std
         self._row_dend_list = row_dend_list_std
@@ -1236,6 +1317,10 @@ class Heatmap(AdditiveUnit):
             ``"column_title_bottom"``.
         """
         zero = grid_py.Unit(0, "mm")
+        # R: set_component_height overrides from HeatmapList alignment
+        _overrides = getattr(self, '_override_heights', {})
+        if component in _overrides:
+            return grid_py.Unit(_overrides[component], "mm")
         if component == "column_title_top":
             has_title = self.column_title is not None
             # Auto-generate title for split heatmaps
@@ -1601,13 +1686,19 @@ class Heatmap(AdditiveUnit):
                 if nr == 0 or nc == 0:
                     continue
 
+                # R: viewport(...) defaults to clip="inherit" (no clip).
+                # Heatmap3D sets heatmap_param["clip_body"]=False so bar
+                # projections can extend beyond the body boundary.
+                _clip = getattr(self, "heatmap_param", {}).get(
+                    "clip_body", True
+                )
                 slice_vp = grid_py.Viewport(
                     x=slice_x[ci],
                     y=slice_y[ri],
                     width=slice_width[ci],
                     height=slice_height[ri],
                     just=["left", "top"],
-                    clip=True,  # R default: clip cell content to body
+                    clip=_clip,
                     name=f"{self.name}_heatmap_body_{ri + 1}_{ci + 1}",
                 )
                 grid_py.push_viewport(slice_vp)
@@ -1669,9 +1760,9 @@ class Heatmap(AdditiveUnit):
                         if hasattr(self.border_gp, "params")
                         else grid_py.Gpar(col="black")
                     )
-                    border_gp.fill = "transparent"
+                    border_gp._params["fill"] = "transparent"
                     if self.border is not True:
-                        border_gp.col = self.border
+                        border_gp._params["col"] = self.border
                     grid_py.grid_rect(
                         gp=border_gp,
                         name=f"{self.name}_body_border_{ri}_{ci}",
@@ -2115,11 +2206,14 @@ class Heatmap(AdditiveUnit):
         row_components: List[str],
         col_components: List[str],
     ) -> None:
-        # Auto-generate split titles
+        # Auto-generate split titles — use split labels when available (R behavior)
         n_col_slices = len(self._column_order_list) if self._column_order_list else 1
         column_title = self.column_title
         if column_title is None and n_col_slices > 1:
-            column_title = [str(i + 1) for i in range(n_col_slices)]
+            if self._column_split_labels is not None:
+                column_title = [str(lbl) for lbl in self._column_split_labels]
+            else:
+                column_title = [str(i + 1) for i in range(n_col_slices)]
         if column_title is None:
             return
 
@@ -2185,11 +2279,15 @@ class Heatmap(AdditiveUnit):
         - Multiple titles (one per slice) → draw each in its slice
         - When row_km/row_split is used, R auto-generates per-slice titles
         """
-        # Auto-generate split titles if row_title is None but we have multiple slices
+        # Auto-generate split titles if row_title is None but we have multiple slices.
+        # R uses the split factor labels as per-slice titles (Heatmap-class.R).
         n_row_slices = len(self._row_order_list) if self._row_order_list else 1
         row_title = self.row_title
         if row_title is None and n_row_slices > 1:
-            row_title = [str(i + 1) for i in range(n_row_slices)]
+            if self._row_split_labels is not None:
+                row_title = [str(lbl) for lbl in self._row_split_labels]
+            else:
+                row_title = [str(i + 1) for i in range(n_row_slices)]
         if row_title is None:
             return
 
@@ -2285,6 +2383,13 @@ class Heatmap(AdditiveUnit):
             ha = getattr(self, anno_attr, None)
             if ha is None or comp_name not in comp_list:
                 continue
+
+            # Inject heatmap reference for anno_summary (R: parent.frame(7))
+            if hasattr(ha, 'anno_list'):
+                for sa in ha.anno_list.values():
+                    af = getattr(sa, '_anno_fun', None)
+                    if af is not None and getattr(af, '_needs_ht_ref', False):
+                        af.var_env["_ht_ref"] = self
 
             if pos_row is None:
                 pos_row = comp_list.index(comp_name) + 1

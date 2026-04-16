@@ -38,6 +38,7 @@ import grid_py
 
 from .legends import Legend, Legends, pack_legend
 from .color_mapping import ColorMapping
+from ._globals import ht_opt
 
 __all__ = [
     "HeatmapList",
@@ -341,8 +342,30 @@ class HeatmapList:
         }
         ht_kwargs = {k: v for k, v in kwargs.items() if k not in _list_only_keys}
 
-        # Step 1: layout the main heatmap first
+        # R supports row_km/row_split/column_km/column_split in draw() —
+        # forward to the main heatmap (R HeatmapList-draw.R:28-45)
         main_ht = self.ht_list[main_idx]
+        for split_key in ("row_km", "row_split", "column_km", "column_split"):
+            if split_key in ht_kwargs and hasattr(main_ht, f"_{split_key}_input"):
+                val = ht_kwargs.pop(split_key)
+                if split_key == "row_km":
+                    main_ht._row_split_k = int(val)
+                elif split_key == "row_split":
+                    import pandas as _pd
+                    if isinstance(getattr(val, 'dtype', None), _pd.CategoricalDtype):
+                        main_ht._row_split_input = _pd.array(val)
+                    else:
+                        main_ht._row_split_input = np.asarray(val)
+                elif split_key == "column_km":
+                    main_ht._column_split_k = int(val)
+                elif split_key == "column_split":
+                    import pandas as _pd
+                    if isinstance(getattr(val, 'dtype', None), _pd.CategoricalDtype):
+                        main_ht._column_split_input = _pd.array(val)
+                    else:
+                        main_ht._column_split_input = np.asarray(val)
+
+        # Step 1: layout the main heatmap first
         if hasattr(main_ht, "make_layout"):
             main_ht.make_layout(**ht_kwargs)
 
@@ -595,16 +618,26 @@ class HeatmapList:
                     _legend_h_mm = float(h_mm[0]) if hasattr(h_mm, '__getitem__') else float(h_mm)
                 except Exception:
                     _legend_h_mm = float(h_unit._values[0]) if h_unit._units[0] == "mm" else 30.0
-            # Add padding: 2mm content + 2mm HEATMAP_LEGEND_PADDING (R global.R:195)
-            _legend_w_mm += 2.0 + 4.0  # padding + HEATMAP_LEGEND_PADDING*2
-            _legend_h_mm += 2.0 + 4.0
+            # R: HEATMAP_LEGEND_PADDING controls space between legend and body.
+            _hlp = float(ht_opt("HEATMAP_LEGEND_PADDING"))
+            _legend_w_mm += 2.0 + _hlp * 2  # content_pad + padding both sides
+            _legend_h_mm += 2.0 + _hlp * 2
 
         # Rows: optional column_title_top, [legend_top], heatmap_panel, [legend_bottom]
         row_heights_list: List[grid_py.Unit] = []
         row_names: List[str] = []
 
         if has_col_title:
-            row_heights_list.append(grid_py.Unit(5, "mm") + grid_py.Unit(1, "lines"))
+            # R: column_title_height = text_height + sum(TITLE_PADDING)
+            # TITLE_PADDING can be scalar (mm) or list [bottom, top] (mm).
+            _tp = ht_opt("TITLE_PADDING")
+            if isinstance(_tp, (list, tuple)):
+                _tp_mm = sum(_tp)
+            else:
+                _tp_mm = float(_tp) * 2  # symmetric
+            row_heights_list.append(
+                grid_py.Unit(_tp_mm, "mm") + grid_py.Unit(1, "lines")
+            )
             row_names.append("column_title")
 
         if _has_legends and _legend_side == "top":
@@ -682,10 +715,19 @@ class HeatmapList:
             grid_py.push_viewport(ct_vp)
             gp_args = {"fontsize": 14}
             gp_args.update(self.column_title_gp)
+            # R: grid.text(title, y = title_padding[1], just = "bottom")
+            # The bottom padding reserves space for Heatmap3D bar
+            # projections that overflow above the body boundary.
+            _tp = ht_opt("TITLE_PADDING")
+            if isinstance(_tp, (list, tuple)):
+                _tp_bottom_mm = float(_tp[0])
+            else:
+                _tp_bottom_mm = float(_tp)
             grid_py.grid_text(
                 self.column_title,
                 x=grid_py.Unit(0.5, "npc"),
-                y=grid_py.Unit(0.5, "npc"),
+                y=grid_py.Unit(_tp_bottom_mm, "mm"),
+                just="bottom",
                 gp=grid_py.Gpar(**gp_args),
             )
             _register_component("global_column_title", "global_column_title")
@@ -815,6 +857,87 @@ class HeatmapList:
                 w = fixed_widths_mm[i] + null_values[i] * mm_per_null
                 heatmap_widths_mm.append(w)
 
+        # --- Cross-heatmap vertical alignment ---
+        # Port of R HeatmapList-draw_component.R:55-86
+        # Compute max top/bottom component heights across all Heatmaps,
+        # then adjust each Heatmap's component heights so bodies align.
+        if self.direction == "horizontal":
+            from complexheatmap.heatmap import Heatmap as _HeatmapCls2
+
+            _top_components = ("column_dend_top", "column_names_top",
+                               "top_annotation")
+            _bottom_components = ("column_dend_bottom", "column_names_bottom",
+                                  "bottom_annotation")
+
+            # R: max_title_component_height
+            _title_top_mm = 0.0
+            _title_bot_mm = 0.0
+            for ht in self.ht_list:
+                if isinstance(ht, _HeatmapCls2):
+                    tt = ht.component_height("column_title_top")
+                    tb = ht.component_height("column_title_bottom")
+                    tt_mm = float(np.squeeze(
+                        grid_py.convert_height(tt, "mm", valueOnly=True)))
+                    tb_mm = float(np.squeeze(
+                        grid_py.convert_height(tb, "mm", valueOnly=True)))
+                    _title_top_mm = max(_title_top_mm, tt_mm)
+                    _title_bot_mm = max(_title_bot_mm, tb_mm)
+
+            # R: max_top/bottom_component_height (dend + names + anno)
+            _max_top_mm = 0.0
+            _max_bot_mm = 0.0
+            for ht in self.ht_list:
+                if isinstance(ht, _HeatmapCls2):
+                    top_mm = sum(
+                        float(np.squeeze(grid_py.convert_height(
+                            ht.component_height(c), "mm", valueOnly=True)))
+                        for c in _top_components
+                    )
+                    bot_mm = sum(
+                        float(np.squeeze(grid_py.convert_height(
+                            ht.component_height(c), "mm", valueOnly=True)))
+                        for c in _bottom_components
+                    )
+                    _max_top_mm = max(_max_top_mm, top_mm)
+                    _max_bot_mm = max(_max_bot_mm, bot_mm)
+
+            # R: set_component_height for each heatmap (lines 79-86)
+            # Pad dendrogram height so all heatmaps have same total
+            # top/bottom component height.
+            for ht in self.ht_list:
+                if isinstance(ht, _HeatmapCls2):
+                    # Set title heights to max
+                    ht._override_heights = getattr(ht, '_override_heights', {})
+                    ht._override_heights["column_title_top"] = _title_top_mm
+                    ht._override_heights["column_title_bottom"] = _title_bot_mm
+
+                    # Pad dend = max_top - (names + anno for this ht)
+                    this_names_top_mm = float(np.squeeze(
+                        grid_py.convert_height(
+                            ht.component_height("column_names_top"),
+                            "mm", valueOnly=True)))
+                    this_anno_top_mm = float(np.squeeze(
+                        grid_py.convert_height(
+                            ht.component_height("top_annotation"),
+                            "mm", valueOnly=True)))
+                    ht._override_heights["column_dend_top"] = max(
+                        0, _max_top_mm - this_names_top_mm - this_anno_top_mm)
+
+                    this_names_bot_mm = float(np.squeeze(
+                        grid_py.convert_height(
+                            ht.component_height("column_names_bottom"),
+                            "mm", valueOnly=True)))
+                    this_anno_bot_mm = float(np.squeeze(
+                        grid_py.convert_height(
+                            ht.component_height("bottom_annotation"),
+                            "mm", valueOnly=True)))
+                    ht._override_heights["column_dend_bottom"] = max(
+                        0, _max_bot_mm - this_names_bot_mm - this_anno_bot_mm)
+
+            # Store for HeatmapAnnotation body alignment
+            self._max_top_component_mm = _title_top_mm + _max_top_mm
+            self._max_bottom_component_mm = _title_bot_mm + _max_bot_mm
+
         # --- Draw each heatmap using absolute-positioned viewports ---
         # Port of R HeatmapList-draw_component.R:622-631
         for idx, ht in enumerate(self.ht_list):
@@ -848,14 +971,83 @@ class HeatmapList:
             elif hasattr(ht, "draw") and hasattr(ht, "anno_list"):
                 # HeatmapAnnotation: draw annotation tracks using the
                 # main heatmap's row order (R HeatmapList-draw_component.R:634)
+                import numpy as _np
                 main_idx = getattr(self, '_main_heatmap_index', 0)
                 main_ht = self.ht_list[main_idx] if main_idx < len(self.ht_list) else None
-                if main_ht and hasattr(main_ht, '_row_order_list') and main_ht._row_order_list:
-                    import numpy as _np
-                    index = _np.concatenate(main_ht._row_order_list)
-                else:
-                    index = _np.arange(10)  # fallback
+                ro_lt = (main_ht._row_order_list
+                         if main_ht and hasattr(main_ht, '_row_order_list')
+                            and main_ht._row_order_list
+                         else None)
+
+                n_slice = len(ro_lt) if ro_lt else 1
+                index = (_np.concatenate(ro_lt) if ro_lt
+                         else _np.arange(10))
+
+                # R HeatmapList-draw_component.R:668:
+                # pushViewport(viewport(y=max_bottom, height=1npc-max_top-max_bottom, just="bottom"))
+                # This aligns the annotation body with the heatmap bodies.
+                _max_top = getattr(self, '_max_top_component_mm', 0)
+                _max_bot = getattr(self, '_max_bottom_component_mm', 0)
+                _body_vp_pushed = False
+                if _max_top > 0 or _max_bot > 0:
+                    body_align_vp = grid_py.Viewport(
+                        y=grid_py.Unit(_max_bot, "mm"),
+                        height=(grid_py.Unit(1, "npc")
+                                - grid_py.Unit(_max_top, "mm")
+                                - grid_py.Unit(_max_bot, "mm")),
+                        just=["center", "bottom"],
+                        clip=False,
+                        name=f"body_align_{ht_name}",
+                    )
+                    grid_py.push_viewport(body_align_vp)
+                    _body_vp_pushed = True
+
+                # R HeatmapList-draw_component.R:637-664:
+                # For anno_mark in a split scenario, compute physical
+                # positions accounting for slice gaps.
+                has_anno_mark = any(
+                    getattr(sa, '_anno_fun', None) is not None
+                    and getattr(getattr(sa, '_anno_fun', None),
+                                'fun_name', '') in ('anno_mark', 'anno_zoom')
+                    for sa in ht.anno_list.values()
+                )
+
+                if n_slice > 1 and has_anno_mark and ro_lt is not None:
+                    sl = getattr(main_ht, '_layout', {}).get('slice', None)
+                    if sl is not None:
+                        _slice_y = sl["y"]
+                        _slice_h = sl["height"]
+
+                        # Compute .pos: physical position of each row
+                        # in NPC coords of the BODY viewport (not slot).
+                        _pos_list = []
+                        for si in range(n_slice):
+                            ni_s = len(ro_lt[si])
+                            sy = grid_py.convert_height(_slice_y[si], "npc",
+                                                        valueOnly=True)
+                            sh = grid_py.convert_height(_slice_h[si], "npc",
+                                                        valueOnly=True)
+                            sy_val = float(_np.squeeze(sy))
+                            sh_val = float(_np.squeeze(sh))
+                            for j in range(ni_s):
+                                p = sy_val - (j + 0.5) / ni_s * sh_val
+                                _pos_list.append(p)
+
+                        _pos = _np.array(_pos_list)
+                        _scale = (0.0, 1.0)
+
+                        for sa in ht.anno_list.values():
+                            af = getattr(sa, '_anno_fun', None)
+                            if (af is not None
+                                    and getattr(af, 'fun_name', '')
+                                    in ('anno_mark', 'anno_zoom')):
+                                af.var_env['_pos'] = _pos
+                                af.var_env['_scale'] = _scale
+
                 ht.draw(index)
+
+                if _body_vp_pushed:
+                    grid_py.up_viewport()
             else:
                 _register_component(f"unknown_{ht_name}", f"heatmap_list_slot_{ht_name}")
 
