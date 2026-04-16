@@ -117,38 +117,47 @@ def max_text_width(
     gp: Optional[Dict[str, Any]] = None,
     rot: float = 0,
 ) -> Any:
-    """Compute the maximum rendered text width using grid_py.
+    """Compute the maximum rendered text width.
+
+    Port of R's ``max_text_width`` (utils.R:393-402)::
+
+        max(grobWidth(textGrob(text[i], gp=subset_gp(gp, i), rot=rot)))
+        convertWidth(u, "mm")
+
+    Uses ``width_details(text_grob(rot=rot))`` which computes the
+    rotated bounding-box width — matching R's ``grobWidth``.
 
     Parameters
     ----------
     text : str or sequence of str
         One or more text strings to measure.
     gp : dict, optional
-        Graphical parameters.  Recognised keys: ``fontsize`` (default 10),
-        ``fontfamily`` (default ``"sans-serif"``), ``fontweight`` (default
-        ``"normal"``).  These are passed through to ``grid_py.Gpar``.
+        Graphical parameters.
     rot : float, optional
-        Rotation angle in degrees (default 0).  Note: grid_py's
-        ``string_width`` does not account for rotation directly; the
-        caller should handle rotated text sizing separately if needed.
+        Rotation angle in degrees (default 0).
 
     Returns
     -------
     grid_py.Unit
-        A ``grid_py.Unit`` representing the maximum width.
+        A ``grid_py.Unit`` in mm representing the maximum width.
     """
     import grid_py
+    from grid_py._primitives import text_grob
+    from grid_py._size import width_details
 
     if isinstance(text, str):
         text = [text]
     if not text:
         return grid_py.Unit(0, "mm")
 
-    # R: max(do.call("unit.c", lapply(..., grobWidth(textGrob(...)))))
-    #    then convertWidth(u, "mm")
-    widths = grid_py.string_width(list(text))
-    mm_vals = grid_py.convert_width(widths, "mm", valueOnly=True)
-    return grid_py.Unit(float(np.max(mm_vals)), "mm")
+    # R: max(grobWidth(textGrob(text[i], gp=gp, rot=rot)))
+    max_w = 0.0
+    for lbl in text:
+        g = text_grob(label=str(lbl), x=0.5, y=0.5, rot=rot, gp=gp)
+        w = width_details(g)
+        w_mm = float(np.squeeze(grid_py.convert_width(w, "mm", valueOnly=True)))
+        max_w = max(max_w, w_mm)
+    return grid_py.Unit(max_w, "mm")
 
 
 def max_text_height(
@@ -156,17 +165,19 @@ def max_text_height(
     gp: Optional[Dict[str, Any]] = None,
     rot: float = 0,
 ) -> Any:
-    """Compute the maximum rendered text height using grid_py.
+    """Compute the maximum rendered text height.
 
-    Port of R's ``max_text_height`` (utils.R:430+):
-    ``convertHeight(max(grobHeight(textGrob(...))), "mm")``.
+    Port of R's ``max_text_height`` (utils.R:430-439)::
+
+        max(grobHeight(textGrob(text[i], gp=subset_gp(gp, i), rot=rot)))
+        convertHeight(u, "mm")
 
     Parameters
     ----------
     text : str or sequence of str
         One or more text strings to measure.
     gp : dict, optional
-        Graphical parameters (same keys as :func:`max_text_width`).
+        Graphical parameters.
     rot : float, optional
         Rotation angle in degrees (default 0).
 
@@ -176,15 +187,22 @@ def max_text_height(
         A ``grid_py.Unit`` in mm representing the maximum height.
     """
     import grid_py
+    from grid_py._primitives import text_grob
+    from grid_py._size import height_details
 
     if isinstance(text, str):
         text = [text]
     if not text:
         return grid_py.Unit(0, "mm")
 
-    heights = grid_py.string_height(list(text))
-    mm_vals = grid_py.convert_height(heights, "mm", valueOnly=True)
-    return grid_py.Unit(float(np.max(mm_vals)), "mm")
+    # R: max(grobHeight(textGrob(text[i], gp=gp, rot=rot)))
+    max_h = 0.0
+    for lbl in text:
+        g = text_grob(label=str(lbl), x=0.5, y=0.5, rot=rot, gp=gp)
+        h = height_details(g)
+        h_mm = float(np.squeeze(grid_py.convert_height(h, "mm", valueOnly=True)))
+        max_h = max(max_h, h_mm)
+    return grid_py.Unit(max_h, "mm")
 
 
 # ---------------------------------------------------------------------------

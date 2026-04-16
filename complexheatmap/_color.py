@@ -217,6 +217,7 @@ def color_ramp2(
     ) -> Union[str, List[str]]:
         scalar = np.isscalar(x)
         vals = np.atleast_1d(np.asarray(x, dtype=float))
+        nan_mask = np.isnan(vals)
         out_coords = np.empty((len(vals), 3), dtype=float)
 
         for ch in range(3):
@@ -227,7 +228,11 @@ def color_ramp2(
         else:
             rgb_out = np.clip(out_coords, 0.0, 1.0)
 
-        hex_list = [_rgb_to_hex(row) for row in rgb_out]
+        # R: NA input → NA_character_ output
+        hex_list = [
+            "#FFFFFF00" if nan_mask[i] else _rgb_to_hex(rgb_out[i])
+            for i in range(len(vals))
+        ]
         return hex_list[0] if scalar else hex_list
 
     # Attach metadata for introspection

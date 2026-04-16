@@ -30,6 +30,23 @@ def _next_name() -> str:
     return f"color_mapping_{_auto_id}"
 
 
+def _to_hex(color: str) -> str:
+    """Convert any color specification to #RRGGBB hex.
+
+    R always stores discrete colors as hex via col2rgb() → rgb().
+    """
+    import matplotlib.colors as mcolors
+    try:
+        rgba = mcolors.to_rgba(color)
+        return "#{:02X}{:02X}{:02X}".format(
+            int(round(rgba[0] * 255)),
+            int(round(rgba[1] * 255)),
+            int(round(rgba[2] * 255)),
+        )
+    except ValueError:
+        return color  # already hex or unknown — return as-is
+
+
 def _is_nan(value: Any) -> bool:
     """Check whether *value* is NaN-like (works for floats, numpy scalars, None)."""
     if value is None:
@@ -105,10 +122,11 @@ class ColorMapping:
             self._breaks: Optional[np.ndarray] = None
 
             if isinstance(colors, dict):
-                # Normalize keys to strings for consistent lookup
+                # Normalize keys to strings, colors to hex
+                # R: col2rgb(colors) → always returns #RRGGBBAA
                 self._levels: List[str] = [str(k) for k in colors.keys()]
                 self._color_map: Dict[str, str] = {
-                    str(k): v for k, v in colors.items()
+                    str(k): _to_hex(v) for k, v in colors.items()
                 }
             else:
                 # colors is a list; levels is mandatory
@@ -122,7 +140,7 @@ class ColorMapping:
                         f"length of 'colors' ({len(colors)})."
                     )
                 self._levels = [str(lv) for lv in levels]
-                self._color_map = {str(lv): c for lv, c in zip(levels, colors)}
+                self._color_map = {str(lv): _to_hex(c) for lv, c in zip(levels, colors)}
 
         # --- Continuous mode ---
         else:
