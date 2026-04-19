@@ -92,6 +92,10 @@ from complexheatmap.oncoprint import (
 )
 from complexheatmap.density_heatmap import density_heatmap, frequency_heatmap
 from complexheatmap.heatmap_3d import Heatmap3D, bar3D
+from complexheatmap._interactive import (
+    InteractionConfig,
+    TooltipTemplate,
+)
 from complexheatmap._data import (
     load_gene_expression,
     load_measles,

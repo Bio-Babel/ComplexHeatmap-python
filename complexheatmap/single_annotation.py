@@ -414,7 +414,23 @@ class SingleAnnotation:
             ))
             _pushed_vp = True
 
-        self._anno_fun.draw(index, k=k, n=n)
+        # Interactive: push block-level metadata so every grob inside the
+        # annotation's draw function (that doesn't set its own) inherits a
+        # per-annotation tooltip context (anno_name, which, slice k/n).
+        from ._interactive.metadata import push_metadata, active_web_renderer, build_metadata
+        from ._interactive.schema import ENTITY_ANNO_CELL
+        block_md = None
+        if active_web_renderer() is not None:
+            block_md = build_metadata(
+                ENTITY_ANNO_CELL,
+                slice=(k, 1) if self.which == "row" else (1, k),
+                payload={
+                    "anno_name": getattr(self, "name", "") or "",
+                    "which": self.which,
+                },
+            )
+        with push_metadata(block_md):
+            self._anno_fun.draw(index, k=k, n=n)
 
         if _pushed_vp:
             grid_py.up_viewport()

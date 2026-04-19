@@ -455,6 +455,11 @@ class Heatmap(AdditiveUnit):
         raster_resize_mat: Union[bool, Callable] = False,
         # Post function
         post_fun: Optional[Callable] = None,
+        # Interactive rendering
+        interactive: Any = None,
+        tooltip: Any = None,
+        on_cell_click: Optional[Callable[..., Any]] = None,
+        on_select: Optional[Callable[..., Any]] = None,
     ) -> None:
         # --- Matrix ---
         # R Heatmap-class.R:254,261: row_labels = rownames(matrix),
@@ -694,6 +699,17 @@ class Heatmap(AdditiveUnit):
 
         # --- Post function ---
         self.post_fun = post_fun
+
+        # --- Interactive rendering ---
+        from ._interactive.schema import normalize_interactive
+        from ._interactive.templates import coerce_template
+        self._interactive_cfg = normalize_interactive(interactive)
+        # Tooltip template: prefer the explicit kwarg, fall back to cfg.tooltip
+        if tooltip is None and self._interactive_cfg is not None:
+            tooltip = self._interactive_cfg.tooltip
+        self._tooltip_template = coerce_template(tooltip)
+        self._on_cell_click = on_cell_click
+        self._on_select = on_select
 
         # --- Layout state (populated by make_layout) ---
         self._row_order_list: Optional[List[np.ndarray]] = None
@@ -1603,7 +1619,8 @@ class Heatmap(AdditiveUnit):
 
         ht_list = HeatmapList()
         ht_list.add_heatmap(self)
-        ht_list.draw(
+        # Propagate the heatmap-level interactive config up to the list
+        result = ht_list.draw(
             show=show,
             width=width,
             height=height,
@@ -1613,7 +1630,9 @@ class Heatmap(AdditiveUnit):
             show_heatmap_legend=show_heatmap_legend,
             show_annotation_legend=show_annotation_legend,
             annotation_legend_list=annotation_legend_list,
+            interactive=self._interactive_cfg,
         )
+        return result
 
     def _draw_into_viewport(self) -> None:
         """Draw the complete heatmap into the current viewport.
@@ -1725,6 +1744,88 @@ class Heatmap(AdditiveUnit):
         except Exception:
             return image
 
+    # ------------------------------------------------------------------
+    # Interactive helpers
+    # ------------------------------------------------------------------
+
+    def _register_body_datagrid(
+        self, ri: int, ci: int,
+        row_ord: np.ndarray, col_ord: np.ndarray,
+        sub_mat: np.ndarray,
+    ) -> None:
+        """Register a DataGrid payload for this body slice on the WebRenderer.
+
+        No-op on non-Web renderers.  The DataGrid gives the JS runtime a
+        compact (pixel → row/col) lookup, which is how body tooltips and
+        hover-highlight work under the DataGrid bypass.
+        """
+        from ._interactive.metadata import active_web_renderer
+        from ._interactive.datagrid import encode_datagrid
+
+        renderer = active_web_renderer()
+        if renderer is None:
+            return
+        # Row / column display names — correct attribute is ``row_labels`` /
+        # ``column_labels`` (no leading underscore), populated in __init__
+        # from either an explicit kwarg or the DataFrame index/columns.
+        # ``row_ord`` is a numpy array of original-matrix indices in display
+        # order; ``row_labels`` may be a list (not ndarray), so iterate.
+        if self.row_labels is not None:
+            row_names = [str(self.row_labels[int(i)]) for i in row_ord]
+        else:
+            row_names = [str(int(i)) for i in row_ord]
+        if self.column_labels is not None:
+            col_names = [str(self.column_labels[int(j)]) for j in col_ord]
+        else:
+            col_names = [str(int(j)) for j in col_ord]
+        grid_id = f"{self.name}_{ri + 1}_{ci + 1}"
+        vp_name = f"{self.name}_heatmap_body_{ri + 1}_{ci + 1}"
+
+        # Non-numeric matrices (e.g. oncoPrint character matrices) use a
+        # code-index encoding so the DataGrid can still carry *something*
+        # to resolve tooltips.  ``_is_numeric_matrix`` is set in __init__.
+        if self._is_numeric_matrix:
+            values = np.ascontiguousarray(sub_mat, dtype=np.float64)
+        else:
+            _, codes = np.unique(sub_mat, return_inverse=True)
+            values = codes.reshape(sub_mat.shape).astype(np.float64)
+
+        # Capture the active colour-ramp spec so the JS runtime can recolor
+        # the body when the continuous legend is dragged (PR3).  Only
+        # continuous ColorMapping objects carry a col_fun with breaks/colors
+        # (discrete ones don't need runtime recolor).
+        color_spec: Optional[Dict[str, Any]] = None
+        cm = self._color_mapping
+        col_fun = cm._col_fun if cm is not None else None
+        if col_fun is not None and hasattr(col_fun, "breaks"):
+            color_spec = {
+                "breaks": [float(b) for b in col_fun.breaks],
+                "colors": [str(c) for c in col_fun.colors],
+                "space": str(col_fun.space),
+                "na_col": str(self.na_col),
+            }
+
+        annotations_payload: Dict[str, Any] = {}
+        if color_spec is not None:
+            annotations_payload["color_spec"] = color_spec
+
+        dg = encode_datagrid(
+            grid_id,
+            values=values,
+            row_ids=[int(x) for x in row_ord],
+            col_ids=[int(x) for x in col_ord],
+            row_names=row_names,
+            col_names=col_names,
+            viewport_name=vp_name,
+            annotations=annotations_payload,
+            max_float32_cells=self._interactive_cfg.max_float32_cells,
+        )
+        renderer.register_data_grid(dg)
+        renderer.register_interaction_module("gridpy-heatmap")
+        # Register the compiled tooltip templates (idempotent)
+        for k, tmpl in self._tooltip_template.to_registry().items():
+            renderer.register_tooltip_template(k, tmpl)
+
     def _draw_heatmap_body(
         self, body_row: int, body_col: int,
         n_row_slices: int, n_col_slices: int,
@@ -1821,6 +1922,14 @@ class Heatmap(AdditiveUnit):
                         just="centre",
                         gp=grid_py.Gpar(**gp_kwargs),
                         name=f"{self.name}_body_rect_{ri}_{ci}",
+                    )
+
+                # Interactive DataGrid registration — regardless of raster.
+                if self._interactive_cfg is not None and self._interactive_cfg.enabled:
+                    self._register_body_datagrid(
+                        ri=ri, ci=ci,
+                        row_ord=row_ord, col_ord=col_ord,
+                        sub_mat=sub_mat,
                     )
 
                 # Border around the whole slice
@@ -1990,12 +2099,30 @@ class Heatmap(AdditiveUnit):
 
             x0, y0, x1, y1 = self._dendrogram_segments(Z, orientation)
             if x0:
-                grid_py.grid_segments(
-                    x0=x0, y0=y0, x1=x1, y1=y1,
-                    default_units="npc",
-                    gp=self.column_dend_gp,
-                    name=f"{self.name}_col_dend_seg_{ci}",
-                )
+                md = None
+                if self._interactive_cfg is not None and self._interactive_cfg.enabled:
+                    from ._interactive.metadata import build_metadata
+                    from ._interactive.schema import ENTITY_DEND_BRANCH
+                    leaves = [int(x) for x in self._column_order_list[ci].tolist()]
+                    md = build_metadata(
+                        ENTITY_DEND_BRANCH,
+                        heatmap=self.name,
+                        slice=(1, ci + 1),
+                        payload={
+                            "axis": "col",
+                            "leaves": leaves,
+                            "n_leaves": len(leaves),
+                            "height": float(Z[-1, 2]) if Z is not None and len(Z) else 0.0,
+                        },
+                    )
+                from ._interactive.metadata import push_metadata
+                with push_metadata(md):
+                    grid_py.grid_segments(
+                        x0=x0, y0=y0, x1=x1, y1=y1,
+                        default_units="npc",
+                        gp=self.column_dend_gp,
+                        name=f"{self.name}_col_dend_seg_{ci}",
+                    )
 
             grid_py.up_viewport()
 
@@ -2052,12 +2179,30 @@ class Heatmap(AdditiveUnit):
 
             x0, y0, x1, y1 = self._dendrogram_segments(Z, orientation)
             if x0:
-                grid_py.grid_segments(
-                    x0=x0, y0=y0, x1=x1, y1=y1,
-                    default_units="npc",
-                    gp=self.row_dend_gp,
-                    name=f"{self.name}_row_dend_seg_{ri}",
-                )
+                md = None
+                if self._interactive_cfg is not None and self._interactive_cfg.enabled:
+                    from ._interactive.metadata import build_metadata
+                    from ._interactive.schema import ENTITY_DEND_BRANCH
+                    leaves = [int(x) for x in self._row_order_list[ri].tolist()]
+                    md = build_metadata(
+                        ENTITY_DEND_BRANCH,
+                        heatmap=self.name,
+                        slice=(ri + 1, 1),
+                        payload={
+                            "axis": "row",
+                            "leaves": leaves,
+                            "n_leaves": len(leaves),
+                            "height": float(Z[-1, 2]) if Z is not None and len(Z) else 0.0,
+                        },
+                    )
+                from ._interactive.metadata import push_metadata
+                with push_metadata(md):
+                    grid_py.grid_segments(
+                        x0=x0, y0=y0, x1=x1, y1=y1,
+                        default_units="npc",
+                        gp=self.row_dend_gp,
+                        name=f"{self.name}_row_dend_seg_{ri}",
+                    )
 
             grid_py.up_viewport()
 

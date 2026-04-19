@@ -129,6 +129,10 @@ class HeatmapList:
         self.column_title_gp: Dict[str, Any] = {}
         self._main_heatmap_index: Optional[int] = None
         self._drawn: bool = False
+        # Populated by draw() when interactive rendering is active.
+        self._list_interactive_cfg: Optional[Any] = None
+        self._web_renderer: Optional[Any] = None
+        self._interactive_widget: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Adding heatmaps
@@ -501,6 +505,8 @@ class HeatmapList:
         height: float = 7.0,
         dpi: float = 150.0,
         filename: Optional[str] = None,
+        interactive: Any = None,
+        link_rows: bool = True,
         **kwargs: Any,
     ) -> "HeatmapList":
         """Draw all heatmaps in a combined figure using grid_py.
@@ -579,8 +585,43 @@ class HeatmapList:
         else:
             gap_unit = ht_gap
 
+        # --- Interactive mode detection ---
+        from ._interactive.schema import normalize_interactive
+        from ._interactive.templates import coerce_template
+        list_cfg = normalize_interactive(interactive)
+        # If any heatmap was constructed with interactive, enable list-level too.
+        if list_cfg is None:
+            for _ht in self.ht_list:
+                _h_cfg = getattr(_ht, "_interactive_cfg", None)
+                if _h_cfg is not None and _h_cfg.enabled:
+                    list_cfg = _h_cfg
+                    break
+        # Propagate the list-level config down to any heatmap that doesn't
+        # yet have one — so that per-cell DataGrid / metadata registration
+        # fires uniformly.
+        if list_cfg is not None:
+            for _ht in self.ht_list:
+                if hasattr(_ht, "_interactive_cfg") and _ht._interactive_cfg is None:
+                    _ht._interactive_cfg = list_cfg
+                    _ht._tooltip_template = coerce_template(list_cfg.tooltip)
+        self._list_interactive_cfg = list_cfg
+
         # --- Set up renderer ---
         grid_py.grid_newpage(width=width, height=height, dpi=dpi)
+        if list_cfg is not None:
+            _state = grid_py.get_state()
+            wr = grid_py.WebRenderer(
+                width=width, height=height, dpi=dpi,
+                theme=list_cfg.theme,
+                interaction_modules=["gridpy-heatmap"],
+            )
+            _state.init_device(
+                wr,
+                width_cm=width * 2.54,
+                height_cm=height * 2.54,
+            )
+            # Persist the chosen side for later finalize/pack
+            self._web_renderer = wr
 
         # --- Build top-level layout ---
         has_col_title = self.column_title is not None
@@ -1278,9 +1319,57 @@ class HeatmapList:
         # --- Save if requested ---
         state = grid_py.get_state()
         rend = state.get_renderer()
-        if filename is not None:
+        if filename is not None and self._list_interactive_cfg is None:
             if rend is not None and hasattr(rend, "write_to_png"):
                 rend.write_to_png(filename)
+
+        # --- Interactive path: wrap into a widget ---
+        # Dual-display contract, mirrors the static Cairo path:
+        #   show=True   → explicit inline iframe (always visible, even
+        #                 in front-ends where ipywidgets JS did not load);
+        #                 widget still returned so callers can wire up
+        #                 traitlet observers and on_event callbacks.
+        #   show=False  → widget returned; user displays it manually.
+        if self._list_interactive_cfg is not None:
+            assert rend is not None, "interactive path requires a renderer"
+            scene_dict = rend.to_scene_dict()
+            from ._interactive.widget import make_widget
+            widget = make_widget(
+                scene=scene_dict,
+                options={
+                    "interactive": True,
+                    "theme": self._list_interactive_cfg.theme,
+                    "brush": bool(self._list_interactive_cfg.brush),
+                    "interactionModules": ["gridpy-heatmap"],
+                },
+            )
+            self._interactive_widget = widget
+            if filename is not None:
+                html = rend.to_html(interactive=True, inline_d3=True)
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(html)
+            if show:
+                try:
+                    from IPython.display import display, HTML
+                except ImportError:
+                    pass
+                else:
+                    html_str = rend.to_html(interactive=True, inline_d3=True)
+                    escaped = (html_str
+                               .replace("&", "&amp;")
+                               .replace('"', "&quot;"))
+                    w_px = int(scene_dict["width"])
+                    h_px = int(scene_dict["height"])
+                    # Iframe padding: 20 px horizontal for scrollbar, 140 px
+                    # vertical to accommodate the threshold panel at bottom.
+                    iframe = (
+                        f'<iframe srcdoc="{escaped}" '
+                        f'width="{w_px + 20}" height="{h_px + 140}" '
+                        f'style="border:none;" '
+                        f'sandbox="allow-scripts"></iframe>'
+                    )
+                    display(HTML(iframe))
+            return widget
 
         # --- Display inline in Jupyter if requested ---
         if show and rend is not None and hasattr(rend, "to_png_bytes"):

@@ -46,6 +46,37 @@ from numpy.typing import ArrayLike
 import grid_py
 
 from .annotation_function import AnnotationFunction
+from ._interactive.metadata import push_metadata, build_metadata, active_web_renderer
+from ._interactive.schema import ENTITY_ANNO_CELL
+
+
+def _anno_meta(
+    anno_name: str,
+    which: str,
+    index_value: int,
+    value: Any,
+    *,
+    heatmap: Optional[str] = None,
+    **extra: Any,
+) -> Optional[Dict[str, Any]]:
+    """Build an anno_cell metadata envelope if interactive rendering is active.
+
+    Returns ``None`` when the current renderer is non-Web so :func:`push_metadata`
+    immediately short-circuits to a no-op.  Callers pass an already-coerced
+    Python int for *index_value*.
+    """
+    if active_web_renderer() is None:
+        return None
+    payload: Dict[str, Any] = {"anno_name": anno_name, "value": value}
+    payload.update({k: v for k, v in extra.items() if v is not None})
+    axis_kw: Dict[str, int] = ({"row": index_value} if which == "row"
+                               else {"col": index_value})
+    return build_metadata(
+        ENTITY_ANNO_CELL,
+        heatmap=heatmap,
+        payload=payload,
+        **axis_kw,
+    )
 
 __all__ = [
     "anno_simple",
@@ -385,13 +416,16 @@ def anno_simple(
                         gpar_kw.setdefault("col", "black")
                     else:
                         gpar_kw["col"] = c
-                    grid_py.grid_rect(
-                        x=grid_py.Unit(xp, "npc"),
-                        y=grid_py.Unit(0.5, "npc"),
-                        width=grid_py.Unit(1.0 / ni, "npc"),
-                        height=grid_py.Unit(1, "npc"),
-                        gp=_to_gpar(**gpar_kw),
-                    )
+                    md = _anno_meta("anno_simple", "column",
+                                    int(index[i]), subset[i])
+                    with push_metadata(md):
+                        grid_py.grid_rect(
+                            x=grid_py.Unit(xp, "npc"),
+                            y=grid_py.Unit(0.5, "npc"),
+                            width=grid_py.Unit(1.0 / ni, "npc"),
+                            height=grid_py.Unit(1, "npc"),
+                            gp=_to_gpar(**gpar_kw),
+                        )
             if _border:
                 grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
         else:
@@ -427,13 +461,16 @@ def anno_simple(
                         gpar_kw.setdefault("col", "black")
                     else:
                         gpar_kw["col"] = c
-                    grid_py.grid_rect(
-                        x=grid_py.Unit(0.5, "npc"),
-                        y=grid_py.Unit(yp, "npc"),
-                        width=grid_py.Unit(1, "npc"),
-                        height=grid_py.Unit(1.0 / ni, "npc"),
-                        gp=_to_gpar(**gpar_kw),
-                    )
+                    md = _anno_meta("anno_simple", "row",
+                                    int(index[i]), subset[i])
+                    with push_metadata(md):
+                        grid_py.grid_rect(
+                            x=grid_py.Unit(0.5, "npc"),
+                            y=grid_py.Unit(yp, "npc"),
+                            width=grid_py.Unit(1, "npc"),
+                            height=grid_py.Unit(1.0 / ni, "npc"),
+                            gp=_to_gpar(**gpar_kw),
+                        )
             if _border:
                 grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
 
@@ -587,24 +624,27 @@ def anno_barplot(
             for i in range(ni):
                 val = float(subset[i]) if not _is_matrix else float(subset[i, 0])
                 bar_h = val - _baseline
+                md = _anno_meta("anno_barplot", _which, int(index[i]), val)
                 if _is_row(_which):
-                    grid_py.grid_rect(
-                        x=grid_py.Unit(_baseline, "native"),
-                        y=grid_py.Unit(i + 1, "native"),
-                        width=grid_py.Unit(bar_h, "native"),
-                        height=grid_py.Unit(_bar_width, "native"),
-                        just="left",
-                        gp=_to_gpar(fill=fill_color, col=border_col),
-                    )
+                    with push_metadata(md):
+                        grid_py.grid_rect(
+                            x=grid_py.Unit(_baseline, "native"),
+                            y=grid_py.Unit(i + 1, "native"),
+                            width=grid_py.Unit(bar_h, "native"),
+                            height=grid_py.Unit(_bar_width, "native"),
+                            just="left",
+                            gp=_to_gpar(fill=fill_color, col=border_col),
+                        )
                 else:
-                    grid_py.grid_rect(
-                        x=grid_py.Unit(i + 1, "native"),
-                        y=grid_py.Unit(_baseline, "native"),
-                        width=grid_py.Unit(_bar_width, "native"),
-                        height=grid_py.Unit(bar_h, "native"),
-                        just="bottom",
-                        gp=_to_gpar(fill=fill_color, col=border_col),
-                    )
+                    with push_metadata(md):
+                        grid_py.grid_rect(
+                            x=grid_py.Unit(i + 1, "native"),
+                            y=grid_py.Unit(_baseline, "native"),
+                            width=grid_py.Unit(_bar_width, "native"),
+                            height=grid_py.Unit(bar_h, "native"),
+                            just="bottom",
+                            gp=_to_gpar(fill=fill_color, col=border_col),
+                        )
 
         # Border rect
         grid_py.grid_rect(gp=_to_gpar(fill="transparent", col="black"))
