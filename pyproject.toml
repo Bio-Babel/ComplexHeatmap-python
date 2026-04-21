@@ -3,28 +3,83 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "complexheatmap-py"
-version = "2.25.3+ad11b26"
-description = "Python port of the R ComplexHeatmap package (grid_py backend)"
+name = "complexheatmap-python"
+version = "2.25.3"
+description = "Python port of the R ComplexHeatmap package on a grid_py backend (tracks R ComplexHeatmap 2.25.3)"
+readme = "README.md"
 requires-python = ">=3.10"
-license = "Artistic-2.0"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Jeffery Liu", email = "jeffliu.lucky@gmail.com" },
+]
+keywords = [
+    "ComplexHeatmap",
+    "heatmap",
+    "oncoprint",
+    "upset",
+    "visualization",
+    "R-port",
+    "bioinformatics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "pandas>=2.0",
-    "grid_py",
+    "rgrid-python>=4.5.3",
     "Pillow>=9.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff"]
-docs = ["mkdocs", "mkdocstrings[python]", "mkdocs-material", "mkdocs-jupyter"]
+dev = ["pytest", "pytest-cov", "ruff", "build", "twine"]
+docs = [
+    "mkdocs",
+    "mkdocstrings[python]",
+    "mkdocs-material",
+    "mkdocs-jupyter",
+]
+
+[project.urls]
+Homepage      = "https://github.com/Bio-Babel/ComplexHeatmap_python"
+Repository    = "https://github.com/Bio-Babel/ComplexHeatmap_python"
+Issues        = "https://github.com/Bio-Babel/ComplexHeatmap_python/issues"
+Documentation = "https://github.com/Bio-Babel/ComplexHeatmap_python#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["complexheatmap"]
 
 [tool.hatch.build.targets.sdist]
-include = ["complexheatmap", "tutorials"]
+exclude = [
+    "tutorials/",
+    "docs/",
+    "tests/",
+    "site/",
+    "validation/",
+    "backup/",
+    "complexheatmap_data/",
+    "ComplexHeatmap-reference/",
+    "mkdocs.yml",
+    ".github/",
+    "*.egg-info/",
+    "build/",
+    "dist/",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -21,6 +21,14 @@ A Python port of the R [ComplexHeatmap](https://github.com/jokergoo/ComplexHeatm
 ## Installation
 
 ```bash
+pip install complexheatmap-python
+```
+
+Or, for a local development checkout:
+
+```bash
+git clone https://github.com/Bio-Babel/ComplexHeatmap_python.git
+cd ComplexHeatmap_python
 pip install -e ".[dev]"
 ```
 

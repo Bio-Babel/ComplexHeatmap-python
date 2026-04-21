@@ -2,7 +2,8 @@
 complexheatmap_py — Python port of the R ComplexHeatmap package.
 """
 
-__version__ = "2.25.3+ad11b26"
+__version__ = "2.25.3"
+__r_commit__ = "ad11b26"
 
 from complexheatmap._globals import ht_opt, reset_ht_opt
 from complexheatmap._color import color_ramp2, add_transparency, rand_color
